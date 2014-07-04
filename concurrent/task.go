@@ -1,6 +1,7 @@
 package concurrent
 
 import (
+	"runtime/debug"
 	"sync"
 	"github.com/zinic/gbus/log"
 	"github.com/zinic/gbus/context"
@@ -38,7 +39,7 @@ func NewTaskGroup(id string) (tg *TaskGroup) {
 		closed: false,
 		waitGroup: &sync.WaitGroup{},
 		tracker: make(map[string]*TaskContext),
-		editContext: context.Using(context.NewMutexContextProvider()),
+		editContext: context.NewLockerContext(),
 	}
 }
 
@@ -48,30 +49,35 @@ type TaskGroup struct {
 	closed bool
 	waitGroup *sync.WaitGroup
 	tracker map[string]*TaskContext
-	editContext *context.CallContext
+	editContext context.Context
 }
 
 func (tg *TaskGroup) Stop() {
-	tg.editContext.Wrap(func() {
+	tg.editContext(func() {
 		if !tg.closed {
 			tg.closed = true
 			close(tg.Tasks)
 		}
-	}).Run()
+	})
 }
 
 func (tg *TaskGroup) dispatch(id string, task Task) {
 	tg.waitGroup.Add(1)
 
-	go func(task Task, tg *TaskGroup) {
+	go func() {
 		defer tg.waitGroup.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n", id, r, debug.Stack())
+			}
+		}()
 
 		if err := task(); err != nil {
 			log.Infof("Error caught from task: %v", err)
 		}
 
 		log.Debugf("Task %s complete", id)
-	}(task, tg)
+	}()
 }
 
 func (tg *TaskGroup) Start() {
@@ -98,14 +104,14 @@ func (tg *TaskGroup) Schedule(task Task) (err error) {
 			task: task,
 		}
 
-		tg.editContext.Wrap(func() {
+		tg.editContext(func() {
 			if !tg.closed {
 				tg.tracker[newCtx.Id] = newCtx
 				tg.Tasks <- newCtx
 			} else {
 				panic("Channel closed already.")
 			}
-		}).Run()
+		})
 	}
 
 	return

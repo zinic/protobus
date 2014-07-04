@@ -2,56 +2,34 @@ package main
 
 import (
 	"os"
-	"os/signal"
 	"syscall"
 
 	"github.com/zinic/gbus/bus"
+	"github.com/zinic/gbus/log"
+	"github.com/zinic/gbus/sources/unix"
 )
 
-type UnixSignalSource struct {
-	signalChannel chan os.Signal
-}
-
-func (uss *UnixSignalSource) Init(actx bus.ActorContext) (err error) {
-	uss.signalChannel = make(chan os.Signal, 32)
-	signal.Notify(uss.signalChannel, os.Interrupt, syscall.SIGTERM)
-	return
-}
-
-func (uss *UnixSignalSource) Close() (err error) {
-	close(uss.signalChannel)
-	return
-}
-
-func (uss *UnixSignalSource) Pull() (reply bus.Event) {
-	select {
-		case sig := <- uss.signalChannel:
-			reply = bus.NewEvent("signal", sig)
-	}
-	return
-}
-
-type UnixSignalSink struct {
+type SignalSink struct {
 	controllerBus bus.Bus
 }
 
-func (uss *UnixSignalSink) Init(actx bus.ActorContext) (err error) {
+func (uss *SignalSink) Init(actx bus.ActorContext) (err error) {
 	return
 }
 
-func (uss *UnixSignalSink) Close() (err error) {
+func (uss *SignalSink) Shutdown() (err error) {
 	return
 }
 
-func (uss *UnixSignalSink) Push(message bus.Message) (reply bus.Event) {
+func (uss *SignalSink) Push(message bus.Message) (reply bus.Event) {
 	msgPayload := message.Payload()
 	if sig, typeOk := msgPayload.(os.Signal); typeOk {
 		switch sig {
 			case os.Interrupt:
-				uss.controllerBus.Stop()
+				uss.controllerBus.Shutdown()
 
 			case syscall.SIGTERM:
-				uss.controllerBus.Stop()
+				uss.controllerBus.Shutdown()
 		}
 	}
 
@@ -59,12 +37,18 @@ func (uss *UnixSignalSink) Push(message bus.Message) (reply bus.Event) {
 }
 
 func main() {
+	log.Info("Starting GBus")
+
 	mainBus := bus.NewGBus("main")
-	mainBus.RegisterSource("unix_signal_source", &UnixSignalSource{})
-	mainBus.RegisterSink("main_unix_signal_sink", &UnixSignalSink {
+	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
+	mainBus.RegisterActor("main::signal_sink", &SignalSink {
 		controllerBus: mainBus,
 	})
 
-	mainBus.Start()
-	mainBus.Join()
+	if err := mainBus.Bind("unix::signal_source", "main::signal_sink"); err == nil {
+		mainBus.Start()
+		mainBus.Join()
+	} else {
+		log.Errorf("Failed to bind signal source to sink. Reason: %v", err)
+	}
 }

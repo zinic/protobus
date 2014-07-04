@@ -5,6 +5,8 @@ import (
 	"github.com/zinic/gbus/concurrent"
 )
 
+
+// ===============
 type Event interface {
 	Action() (action interface{})
 	Payload() (payload interface{})
@@ -12,7 +14,7 @@ type Event interface {
 
 type Message interface {
 	Event
-	Source() (source *uuid.UUID)
+	Source() (source Source)
 }
 
 
@@ -23,7 +25,7 @@ type ActorContext interface {
 
 type Actor interface {
 	Init(actx ActorContext) (err error)
-	Close() (err error)
+	Shutdown() (err error)
 }
 
 type Source interface {
@@ -36,35 +38,30 @@ type Sink interface {
 	Push(message Message) (reply Event)
 }
 
+
 // ===============
-type ActorHandle interface {
+type Handle interface {
 	Id() (id *uuid.UUID)
+}
+
+type ActorHandle interface {
+	Handle
 	Kill() (err error)
-
-	OnClose(func())
-}
-
-type TaskHandle interface {
-	ActorHandle
-}
-
-type SourceHandle interface {
-	ActorHandle
-}
-
-type SinkHandle interface {
-	ActorHandle
-	Listen(action string) (err error)
 }
 
 
 // ===============
-type Bus interface {
+type Daemon interface {
 	Start() (err error)
-	Stop() (err error)
+	Shutdown()
 	Join() (err error)
+}
 
-	SubmitTask(task concurrent.Task) (th TaskHandle)
-	RegisterSink(name string, si Sink) (sh SinkHandle)
-	RegisterSource(name string, si Source) (sh SourceHandle)
+type Bus interface {
+	Daemon
+
+	Bind(source, sink string) (err error)
+
+	RegisterTask(task concurrent.Task) (handle Handle, err error)
+	RegisterActor(name string, actor Actor) (ah ActorHandle, err error)
 }

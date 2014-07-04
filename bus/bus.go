@@ -2,66 +2,188 @@ package bus
 
 import (
 	"fmt"
+	"time"
+
+	"github.com/nu7hatch/gouuid"
 
 	"github.com/zinic/gbus/log"
-	"github.com/nu7hatch/gouuid"
+	"github.com/zinic/gbus/context"
 	"github.com/zinic/gbus/concurrent"
 )
 
+const (
+	SHUTDOWN_POLL_INTERVAL = 50 * time.Millisecond
+	DEFAULT_SHUTDOWN_WAIT_DURATION = 5 * time.Second
+)
+
+func shutdownActor(name string, actor Actor, shutdownChan chan int) {
+	log.Debugf("Shutting down actor: %s.", name)
+
+	if actor.Shutdown() == nil {
+		shutdownChan <- 0
+	} else {
+		shutdownChan <- 1
+	}
+}
+
+func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval time.Duration, completionChan chan int) (timeTaken time.Duration) {
+	timeTaken = 0
+
+	for taskCount > 0 {
+		then := time.Now()
+
+		select {
+		case <- completionChan:
+			taskCount -= 1
+
+		default:
+			time.Sleep(checkInterval)
+			timeTaken += time.Now().Sub(then)
+
+			if timeTaken >= timeRemaining {
+				log.Error("Timed out waiting for tasks to finish. Moving on.")
+				taskCount = 0
+			}
+		}
+	}
+
+	return
+}
 
 func NewGBus(busName string) (bus Bus) {
+	tg := concurrent.NewTaskGroup(fmt.Sprintf("%s-tg", busName))
+
 	return &GBus {
-		taskGroup: concurrent.NewTaskGroup(fmt.Sprintf("%s-tg", busName)),
+		evloopChan: make(chan int, 1),
+		bindings: make(map[string][]string),
+		actors: make(map[string]Actor),
+		taskGroup: tg,
+		bindingsContext: context.NewLockerContext(),
+		actorsContext: context.NewLockerContext(),
 	}
 }
 
 
 // ===============
 type GBus struct {
-	sources map[string]Source
-	sinks map[string]Sink
-
+	evloopChan chan int
 	taskGroup *concurrent.TaskGroup
+
+	bindings map[string][]string
+	bindingsContext context.Context
+
+	actors map[string]Actor
+	actorsContext context.Context
 }
 
 func (gbus *GBus) Start() (err error) {
 	log.Debug("Task group started")
+
 	gbus.taskGroup.Start()
+	gbus.taskGroup.Schedule(gbus.evloop)
 
-	ctx := &GBusActorContext {
-		bus: gbus,
-	}
+	return
+}
 
-	for name, actor := range gbus.sources {
-		gbus.initActor(name, actor, ctx)
-	}
-
-	for name, actor := range gbus.sinks {
-		gbus.initActor(name, actor, ctx)
-	}
-
-	gbus.taskGroup.Schedule(func() (err error) {
-		// Stopped here
-		// I'm looking for stuff to get processing of events working. This
-		// means routing probably x.x
+func (gbus *GBus) Source(name string) (source Source) {
+	gbus.actorsContext(func() {
+		if actor, found := gbus.actors[name]; found {
+			source = actor.(Source)
+		}
 	})
 
 	return
 }
 
-func (gbus *GBus) initActor(name string, actor Actor, ctx ActorContext) {
-	gbus.taskGroup.Schedule(func() (err error) {
-		if err := actor.Init(ctx); err != nil {
-			log.Errorf("Actor %s failed to initialize: %v.", name, err)
-			gbus.Stop()
+func (gbus *GBus) Sink(name string) (sink Sink) {
+	gbus.actorsContext(func() {
+		if actor, found := gbus.actors[name]; found {
+			sink = actor.(Sink)
 		}
+	})
 
+	return
+}
+
+func (gbus *GBus) Bindings() (bindingsCopy map[string][]string) {
+	bindingsCopy = make(map[string][]string)
+
+	gbus.bindingsContext(func() {
+		for k, v := range gbus.bindings {
+			bindingsCopy[k] = v
+		}
+	})
+
+	return
+}
+
+func (gbus *GBus) Bind(source, sink string) (err error) {
+	if _, found := gbus.actors[source]; !found {
+		err = fmt.Errorf("No source %s registered.", source)
+	}
+
+	if _, found := gbus.actors[sink]; !found {
+		err = fmt.Errorf("No sinke %s registered.", sink)
+	}
+
+	gbus.bindingsContext(func() {
+		sinks := gbus.bindings[source]
+
+		if sinks != nil {
+			gbus.bindings[source] = append(gbus.bindings[source], sink)
+		} else {
+			gbus.bindings[source] = []string{sink}
+		}
+	})
+
+	return
+}
+
+func (gbus *GBus) Shutdown() {
+	log.Infof("Shutting down GBus %s.", gbus.taskGroup.Id)
+
+	gbus.evloopChan <- 0
+	gbus.taskGroup.Schedule(func() (err error) {
+		gbus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
 		return
 	})
 }
 
-func (gbus *GBus) Stop() (err error) {
+func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
+	activeTasks := 0
+	shutdownChan := make(chan int, len(gbus.actors))
+
+	for _, sinks := range gbus.bindings {
+		for _, sink := range sinks {
+			if actor, found := gbus.actors[sink]; found {
+				activeTasks += 1
+				delete(gbus.actors, sink)
+
+				gbus.taskGroup.Schedule(func() (err error) {
+					shutdownActor(sink, actor, shutdownChan)
+					return
+				})
+			}
+		}
+	}
+	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
+
+	activeTasks = 0
+	for source, _ := range gbus.bindings {
+		if actor, found := gbus.actors[source]; found {
+			activeTasks += 1
+			delete(gbus.actors, source)
+
+			gbus.taskGroup.Schedule(func() (err error) {
+				shutdownActor(source, actor, shutdownChan)
+				return
+			})
+		}
+	}
+	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
+
 	gbus.taskGroup.Stop()
+	close(gbus.evloopChan)
 	return
 }
 
@@ -70,17 +192,85 @@ func (gbus *GBus) Join() (err error) {
 	return
 }
 
-func (gbus *GBus) SubmitTask(task concurrent.Task) (th TaskHandle) {
+func (gbus *GBus) RegisterTask(task concurrent.Task) (handle Handle, err error) {
 	gbus.taskGroup.Schedule(task)
 	return
 }
 
-func (gbus *GBus) RegisterSink(name string, sink Sink) (sh SinkHandle) {
+func (gbus *GBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
+	gbus.actorsContext(func() {
+		if _, found := gbus.actors[name]; !found {
+			gbus.actors[name] = actor
+			gbus.initActor(name, actor)
+		} else {
+			err = fmt.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
+		}
+	})
+
 	return
 }
 
-func (gbus *GBus) RegisterSource(name string, source Source) (sh SourceHandle) {
+func (gbus *GBus) evloop() (err error) {
+	running := true
+	for running {
+		select {
+		case <-gbus.evloopChan:
+			running = false
+
+		default:
+			if !gbus.scan() {
+				time.Sleep(1 * time.Millisecond)
+			}
+		}
+	}
+
 	return
+}
+
+func (gbus *GBus) scan() (eventProcessed bool) {
+	eventProcessed = false
+
+	for source, sinks := range gbus.Bindings() {
+		sourceInst := gbus.Source(source)
+
+		if sourceReply := sourceInst.Pull(); sourceReply != nil {
+			eventProcessed = true
+			message := NewMessage(sourceInst, sourceReply)
+
+			gbus.taskGroup.Schedule(func() (err error) {
+				gbus.dispatch(message, sinks)
+				return
+			})
+		}
+	}
+	return
+}
+
+func (gbus *GBus) dispatch(message Message, sinks []string) () {
+	for _, sink := range sinks {
+		sinkInst := gbus.Sink(sink)
+
+		// TODO: Handle sink reply
+		gbus.taskGroup.Schedule(func() (err error) {
+			sinkInst.Push(message)
+			return
+		})
+	}
+}
+
+func (gbus *GBus) initActor(name string, actor Actor) {
+	ctx := &GBusActorContext {
+		bus: gbus,
+	}
+
+	gbus.taskGroup.Schedule(func() (err error) {
+		if err := actor.Init(ctx); err != nil {
+			log.Errorf("Actor %s failed to initialize: %v.", name, err)
+			gbus.Shutdown()
+		}
+
+		return
+	})
 }
 
 
@@ -109,10 +299,21 @@ func (de *DefaultEvent) Payload() (payload interface{}) {
 // ===============
 type DefaultMessage struct {
 	DefaultEvent
-	source *uuid.UUID
+	source Source
 }
 
-func (dm *DefaultMessage) Source() (uuid *uuid.UUID) {
+func NewMessage(source Source, event Event) (message Message) {
+	return &DefaultMessage {
+		DefaultEvent {
+			action: event.Action(),
+			payload: event.Payload(),
+		},
+
+		source,
+	}
+}
+
+func (dm *DefaultMessage) Source() (source Source) {
 	return dm.source
 }
 
