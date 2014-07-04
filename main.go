@@ -7,6 +7,7 @@ import (
 	"github.com/zinic/gbus/bus"
 	"github.com/zinic/gbus/log"
 	"github.com/zinic/gbus/sources/unix"
+	"github.com/zinic/gbus/sources/testing"
 )
 
 type SignalSink struct {
@@ -21,7 +22,7 @@ func (uss *SignalSink) Shutdown() (err error) {
 	return
 }
 
-func (uss *SignalSink) Push(message bus.Message) (reply bus.Event) {
+func (uss *SignalSink) Push(message bus.Message) {
 	msgPayload := message.Payload()
 	if sig, typeOk := msgPayload.(os.Signal); typeOk {
 		switch sig {
@@ -32,18 +33,20 @@ func (uss *SignalSink) Push(message bus.Message) (reply bus.Event) {
 				uss.controllerBus.Shutdown()
 		}
 	}
-
-	return
 }
 
 func main() {
 	log.Info("Starting GBus")
 
 	mainBus := bus.NewGBus("main")
+
+	mainBus.RegisterActor("sampler", &testing.Sampler{})
 	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
 	mainBus.RegisterActor("main::signal_sink", &SignalSink {
 		controllerBus: mainBus,
 	})
+
+	// mainBus.Bind("sampler", "sampler")
 
 	if err := mainBus.Bind("unix::signal_source", "main::signal_sink"); err == nil {
 		mainBus.Start()

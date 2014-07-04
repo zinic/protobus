@@ -16,7 +16,7 @@ type Task func() (err error)
 type ErrorHandler func(err error)
 
 type TaskContext struct {
-	Id string
+	Id *uuid.UUID
 	status string
 	task Task
 	editContext *context.CallContext
@@ -38,7 +38,7 @@ func NewTaskGroup(id string) (tg *TaskGroup) {
 		Tasks: make(chan *TaskContext, MAX_TASKS_QUEUED),
 		closed: false,
 		waitGroup: &sync.WaitGroup{},
-		tracker: make(map[string]*TaskContext),
+		tracker: make(map[*uuid.UUID]*TaskContext),
 		editContext: context.NewLockerContext(),
 	}
 }
@@ -48,7 +48,7 @@ type TaskGroup struct {
 	Tasks chan *TaskContext
 	closed bool
 	waitGroup *sync.WaitGroup
-	tracker map[string]*TaskContext
+	tracker map[*uuid.UUID]*TaskContext
 	editContext context.Context
 }
 
@@ -61,46 +61,74 @@ func (tg *TaskGroup) Stop() {
 	})
 }
 
-func (tg *TaskGroup) dispatch(id string, task Task) {
+func (tg *TaskGroup) dispatch(taskCtx *TaskContext) {
 	tg.waitGroup.Add(1)
 
 	go func() {
-		defer tg.waitGroup.Done()
 		defer func() {
-			if r := recover(); r != nil {
-				log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n", id, r, debug.Stack())
+			if recovery := recover(); recovery != nil {
+				log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n",
+					taskCtx.Id.String(), recovery, debug.Stack())
 			}
+
+			delete(tg.tracker, taskCtx.Id)
+			tg.waitGroup.Done()
 		}()
 
-		if err := task(); err != nil {
+		if err := taskCtx.task(); err != nil {
 			log.Infof("Error caught from task: %v", err)
 		}
 
-		log.Debugf("Task %s complete", id)
+		log.Debugf("Task %s complete", taskCtx.Id.String())
 	}()
 }
 
-func (tg *TaskGroup) Start() {
-	tg.dispatch(tg.Id, func() (err error) {
-		for next := range tg.Tasks {
-			if next == nil {
-				break
-			}
-
-			log.Debugf("Dispatching %s", next.Id)
-			tg.dispatch(next.Id, next.task)
-		}
-
-		return
-	})
-}
-
-func (tg *TaskGroup) Schedule(task Task) (err error) {
+func (tg *TaskGroup) Start() (err error) {
 	var taskId *uuid.UUID
 
 	if taskId, err = uuid.NewV4(); err == nil {
 		newCtx := &TaskContext {
-			Id: taskId.String(),
+			Id: taskId,
+			task: func() (err error) {
+				for next := range tg.Tasks {
+					if next == nil {
+						break
+					}
+
+					log.Debugf("Dispatching %s", next.Id.String())
+					tg.dispatch(next)
+				}
+
+				return
+			},
+		}
+
+		tg.dispatch(newCtx)
+	}
+
+	return
+}
+
+func (tg *TaskGroup) Status(id *uuid.UUID) (status string, found bool) {
+	tg.editContext(func() {
+		found = false
+		status = "NOT_FOUND"
+
+		if taskCtx, exists := tg.tracker[id]; exists {
+			found = true
+			status = taskCtx.status
+		}
+	})
+
+	return
+}
+
+func (tg *TaskGroup) Schedule(task Task) (id *uuid.UUID, err error) {
+	var taskId *uuid.UUID
+
+	if taskId, err = uuid.NewV4(); err == nil {
+		newCtx := &TaskContext {
+			Id: taskId,
 			task: task,
 		}
 

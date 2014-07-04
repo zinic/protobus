@@ -5,6 +5,8 @@ import (
 	"github.com/zinic/gbus/concurrent"
 )
 
+// ===============
+type ActorId *uuid.UUID
 
 // ===============
 type Event interface {
@@ -20,6 +22,7 @@ type Message interface {
 
 // ===============
 type ActorContext interface {
+	ActorId() (id ActorId)
 	Bus() (bus Bus)
 }
 
@@ -35,13 +38,13 @@ type Source interface {
 
 type Sink interface {
 	Actor
-	Push(message Message) (reply Event)
+	Push(message Message)
 }
 
 
 // ===============
 type Handle interface {
-	Id() (id *uuid.UUID)
+	ActorId() (id ActorId)
 }
 
 type ActorHandle interface {

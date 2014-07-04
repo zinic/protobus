@@ -24,9 +24,8 @@ func (pipe *Pipe) Shutdown() (err error) {
 	return
 }
 
-func (pipe *Pipe) Push(message bus.Message) (reply bus.Event) {
+func (pipe *Pipe) Push(message bus.Message) {
 	pipe.msgBuffer <- message
-	return
 }
 
 func (pipe *Pipe) Pull() (reply bus.Event) {

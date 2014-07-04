@@ -219,7 +219,7 @@ func (gbus *GBus) evloop() (err error) {
 
 		default:
 			if !gbus.scan() {
-				time.Sleep(1 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}
@@ -330,11 +330,16 @@ func (dm *DefaultMessage) Payload() (payload interface{}) {
 
 // ===============
 type GBusActorContext struct {
+	id ActorId
 	bus Bus
 }
 
 func (gbac *GBusActorContext) Bus() (bus Bus) {
 	return gbac.bus
+}
+
+func (gbac *GBusActorContext) ActorId() (id ActorId) {
+	return gbac.id
 }
 
 
@@ -343,7 +348,7 @@ type GBusActorHandle struct {
 	id *uuid.UUID
 }
 
-func (gbah *GBusActorHandle) Id() (id *uuid.UUID) {
+func (gbah *GBusActorHandle) ActorId() (id ActorId) {
 	return gbah.id
 }
 
