@@ -118,23 +118,28 @@ func (gbus *GBus) Bindings() (bindingsCopy map[string][]string) {
 }
 
 func (gbus *GBus) Bind(source, sink string) (err error) {
-	if _, found := gbus.actors[source]; !found {
-		err = fmt.Errorf("No source %s registered.", source)
-	}
+	gbus.actorsContext(func() {
+		if _, found := gbus.actors[source]; !found {
+			err = fmt.Errorf("No source %s registered.", source)
+		}
 
-	if _, found := gbus.actors[sink]; !found {
-		err = fmt.Errorf("No sinke %s registered.", sink)
-	}
-
-	gbus.bindingsContext(func() {
-		sinks := gbus.bindings[source]
-
-		if sinks != nil {
-			gbus.bindings[source] = append(gbus.bindings[source], sink)
-		} else {
-			gbus.bindings[source] = []string{sink}
+		if _, found := gbus.actors[sink]; !found {
+			err = fmt.Errorf("No sinke %s registered.", sink)
 		}
 	})
+
+	if err == nil {
+		gbus.bindingsContext(func() {
+			sinks := gbus.bindings[source]
+
+			if sinks == nil {
+				sinks = make([]string, 0)
+			}
+
+			sinks = append(sinks, sink)
+			gbus.bindings[source] = sinks
+		})
+	}
 
 	return
 }
@@ -153,6 +158,20 @@ func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration
 	activeTasks := 0
 	shutdownChan := make(chan int, len(gbus.actors))
 
+	for source, _ := range gbus.bindings {
+		if actor, found := gbus.actors[source]; found {
+			activeTasks += 1
+			delete(gbus.actors, source)
+
+			gbus.taskGroup.Schedule(func() (err error) {
+				shutdownActor(source, actor, shutdownChan)
+				return
+			})
+		}
+	}
+	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
+
+	activeTasks = 0
 	for _, sinks := range gbus.bindings {
 		for _, sink := range sinks {
 			if actor, found := gbus.actors[sink]; found {
@@ -164,20 +183,6 @@ func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration
 					return
 				})
 			}
-		}
-	}
-	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
-
-	activeTasks = 0
-	for source, _ := range gbus.bindings {
-		if actor, found := gbus.actors[source]; found {
-			activeTasks += 1
-			delete(gbus.actors, source)
-
-			gbus.taskGroup.Schedule(func() (err error) {
-				shutdownActor(source, actor, shutdownChan)
-				return
-			})
 		}
 	}
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
@@ -235,12 +240,7 @@ func (gbus *GBus) scan() (eventProcessed bool) {
 
 		if sourceReply := sourceInst.Pull(); sourceReply != nil {
 			eventProcessed = true
-			message := NewMessage(sourceInst, sourceReply)
-
-			gbus.taskGroup.Schedule(func() (err error) {
-				gbus.dispatch(message, sinks)
-				return
-			})
+			gbus.dispatch(NewMessage(sourceInst, sourceReply), sinks)
 		}
 	}
 	return
@@ -271,6 +271,40 @@ func (gbus *GBus) initActor(name string, actor Actor) {
 
 		return
 	})
+}
+
+
+// ===============
+func SimpleSource(pull func() (message Message)) (source Source) {
+	return &SimpleActor {
+		pull: pull,
+	}
+}
+func SimpleSink(push func(message Message)) (source Source) {
+	return &SimpleActor {
+		push: push,
+	}
+}
+
+type SimpleActor struct {
+	pull func() (message Message)
+	push func(message Message)
+}
+
+func (sa *SimpleActor) Init(actx ActorContext) (err error) {
+	return
+}
+
+func (sa *SimpleActor) Shutdown() (err error) {
+	return
+}
+
+func (sa *SimpleActor) Push(message Message) {
+	sa.push(message)
+}
+
+func (sa *SimpleActor) Pull() (reply Event) {
+	return sa.pull()
 }
 
 
