@@ -8,6 +8,7 @@ import (
 // ===============
 type ActorId *uuid.UUID
 
+
 // ===============
 type Event interface {
 	Action() (action interface{})
