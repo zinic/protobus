@@ -1,22 +1,25 @@
 package concurrent
 
 import (
-	"runtime/debug"
+	"fmt"
 	"sync"
+	"runtime"
+	"runtime/debug"
+
 	"github.com/zinic/gbus/log"
 	"github.com/zinic/gbus/context"
 	"github.com/nu7hatch/gouuid"
 )
 
 const (
-	MAX_TASKS_QUEUED = 1024
+	MAX_TASKS_QUEUED = 32768
 )
 
 type Task func() (err error)
 type ErrorHandler func(err error)
 
 type TaskContext struct {
-	Id *uuid.UUID
+	Id int64
 	status string
 	task Task
 	editContext *context.CallContext
@@ -37,8 +40,8 @@ func NewTaskGroup(id string) (tg *TaskGroup) {
 		Id: id,
 		Tasks: make(chan *TaskContext, MAX_TASKS_QUEUED),
 		closed: false,
+		nextTaskId: 0,
 		waitGroup: &sync.WaitGroup{},
-		tracker: make(map[*uuid.UUID]*TaskContext),
 		editContext: context.NewLockerContext(),
 	}
 }
@@ -47,99 +50,66 @@ type TaskGroup struct {
 	Id string
 	Tasks chan *TaskContext
 	closed bool
+	nextTaskId int64
 	waitGroup *sync.WaitGroup
-	tracker map[*uuid.UUID]*TaskContext
 	editContext context.Context
 }
 
 func (tg *TaskGroup) Stop() {
 	tg.editContext(func() {
-		if !tg.closed {
-			tg.closed = true
-			close(tg.Tasks)
-		}
+		tg.closed = true
 	})
+
+	close(tg.Tasks)
+}
+
+func (tg *TaskGroup) worker() {
+	defer tg.waitGroup.Done()
+
+	for task := range tg.Tasks {
+		tg.dispatch(task)
+	}
 }
 
 func (tg *TaskGroup) dispatch(taskCtx *TaskContext) {
-	tg.waitGroup.Add(1)
+	defer func() {
+		if recovery := recover(); recovery != nil {
+			log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n",
+				taskCtx.Id, recovery, debug.Stack())
+		}
+	}()
 
-	go func() {
-		defer func() {
-			if recovery := recover(); recovery != nil {
-				log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n",
-					taskCtx.Id.String(), recovery, debug.Stack())
-			}
-
-			delete(tg.tracker, taskCtx.Id)
-			tg.waitGroup.Done()
-		}()
-
+	if !tg.closed {
 		if err := taskCtx.task(); err != nil {
 			log.Infof("Error caught from task: %v", err)
 		}
-
-		log.Debugf("Task %s complete", taskCtx.Id.String())
-	}()
+	}
 }
 
 func (tg *TaskGroup) Start() (err error) {
-	var taskId *uuid.UUID
+	if tg.closed {
+		panic(fmt.Sprintf("Task group %s already closed.", tg.Id))
+	}
 
-	if taskId, err = uuid.NewV4(); err == nil {
-		newCtx := &TaskContext {
-			Id: taskId,
-			task: func() (err error) {
-				for next := range tg.Tasks {
-					if next == nil {
-						break
-					}
-
-					log.Debugf("Dispatching %s", next.Id.String())
-					tg.dispatch(next)
-				}
-
-				return
-			},
-		}
-
-		tg.dispatch(newCtx)
+	for cpu := 0; cpu < runtime.NumCPU() * 2; cpu++ {
+		tg.waitGroup.Add(1)
+		go tg.worker()
 	}
 
 	return
 }
 
-func (tg *TaskGroup) Status(id *uuid.UUID) (status string, found bool) {
-	tg.editContext(func() {
-		found = false
-		status = "NOT_FOUND"
-
-		if taskCtx, exists := tg.tracker[id]; exists {
-			found = true
-			status = taskCtx.status
-		}
-	})
-
-	return
-}
-
 func (tg *TaskGroup) Schedule(task Task) (id *uuid.UUID, err error) {
-	var taskId *uuid.UUID
+	tg.nextTaskId++
+	newCtx := &TaskContext {
+		Id: tg.nextTaskId,
+		task: task,
+	}
 
-	if taskId, err = uuid.NewV4(); err == nil {
-		newCtx := &TaskContext {
-			Id: taskId,
-			task: task,
-		}
-
-		tg.editContext(func() {
-			if !tg.closed {
-				tg.tracker[newCtx.Id] = newCtx
-				tg.Tasks <- newCtx
-			} else {
-				panic("Channel closed already.")
-			}
-		})
+	if !tg.closed {
+		tg.Tasks <- newCtx
+	} else {
+		panic("Channel closed already.")
 	}
 
 	return

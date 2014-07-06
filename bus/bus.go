@@ -51,22 +51,24 @@ func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval
 }
 
 func NewGBus(busName string) (bus Bus) {
-	tg := concurrent.NewTaskGroup(fmt.Sprintf("%s-tg", busName))
-
-	return &GBus {
-		evloopChan: make(chan int, 1),
+	gbus := &GBus {
 		bindings: make(map[string][]string),
-		actors: make(map[string]Actor),
-		taskGroup: tg,
 		bindingsContext: context.NewLockerContext(),
+
+		actors: make(map[string]Actor),
 		actorsContext: context.NewLockerContext(),
 	}
+
+	gbus.taskGroup = concurrent.NewTaskGroup(fmt.Sprintf("%s-tg", busName))
+	gbus.eventLoop = NewEventLoop(gbus.scan)
+
+	return gbus
 }
 
 
 // ===============
 type GBus struct {
-	evloopChan chan int
+	eventLoop *EventLoop
 	taskGroup *concurrent.TaskGroup
 
 	bindings map[string][]string
@@ -77,11 +79,8 @@ type GBus struct {
 }
 
 func (gbus *GBus) Start() (err error) {
-	log.Debug("Task group started")
-
+	gbus.taskGroup.Schedule(gbus.eventLoop.Loop)
 	gbus.taskGroup.Start()
-	gbus.taskGroup.Schedule(gbus.evloop)
-
 	return
 }
 
@@ -147,7 +146,6 @@ func (gbus *GBus) Bind(source, sink string) (err error) {
 func (gbus *GBus) Shutdown() {
 	log.Infof("Shutting down GBus %s.", gbus.taskGroup.Id)
 
-	gbus.evloopChan <- 0
 	gbus.taskGroup.Schedule(func() (err error) {
 		gbus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
 		return
@@ -155,6 +153,10 @@ func (gbus *GBus) Shutdown() {
 }
 
 func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
+	// Wait for the evloop to exit
+	gbus.eventLoop.Stop()
+
+	// ---
 	activeTasks := 0
 	shutdownChan := make(chan int, len(gbus.actors))
 
@@ -188,7 +190,6 @@ func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
 
 	gbus.taskGroup.Stop()
-	close(gbus.evloopChan)
 	return
 }
 
@@ -211,23 +212,6 @@ func (gbus *GBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err e
 			err = fmt.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
 		}
 	})
-
-	return
-}
-
-func (gbus *GBus) evloop() (err error) {
-	running := true
-	for running {
-		select {
-		case <-gbus.evloopChan:
-			running = false
-
-		default:
-			if !gbus.scan() {
-				time.Sleep(50 * time.Millisecond)
-			}
-		}
-	}
 
 	return
 }

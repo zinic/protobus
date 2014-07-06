@@ -22,10 +22,10 @@ func (sampler *Sampler) Init(actx bus.ActorContext) (err error) {
 }
 
 func (sampler *Sampler) Shutdown() (err error) {
-	elapsed := time.Now().Sub(sampler.startupTime) * time.Second
-	processed := sampler.msgCount / int64(elapsed)
+	elapsed := time.Now().Sub(sampler.startupTime)
+	processed := float64(sampler.msgCount) / elapsed.Seconds()
 
-	log.Infof("Processed %n messages in %n seconds.", processed, elapsed)
+	log.Infof("Processed %d messages in %d seconds for %d messages per second.", sampler.msgCount, elapsed.Seconds(), processed)
 	return
 }
 

@@ -2,11 +2,12 @@ package main
 
 import (
 	"os"
+	"strings"
 	"syscall"
+	"runtime/pprof"
 
 	"github.com/zinic/gbus/bus"
 	"github.com/zinic/gbus/log"
-	"github.com/zinic/gbus/wiring"
 	"github.com/zinic/gbus/sources/unix"
 	"github.com/zinic/gbus/sources/testing"
 )
@@ -42,29 +43,27 @@ func main() {
 	mainBus := bus.NewGBus("main")
 
 	mainBus.RegisterActor("sampler", &testing.Sampler{})
-	mainBus.RegisterActor("printer", bus.SimpleSink(func (message bus.Message) {
-		log.Infof("Got message: %v", message)
-	}))
-
-	mainBus.RegisterActor("splitter", wiring.NewPipe(1024))
 	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
 	mainBus.RegisterActor("main::signal_sink", &SignalSink {
 		controllerBus: mainBus,
 	})
 
-	if err := mainBus.Bind("unix::signal_source", "splitter"); err != nil {
+	if err := mainBus.Bind("unix::signal_source", "main::signal_sink"); err != nil {
 		log.Errorf("Failed during bind: %v", err)
 	}
 
-	if err := mainBus.Bind("splitter", "printer"); err != nil {
+	if err := mainBus.Bind("sampler", "sampler"); err != nil {
 		log.Errorf("Failed during bind: %v", err)
 	}
 
-	if err := mainBus.Bind("splitter", "main::signal_sink"); err != nil {
-		log.Errorf("Failed during bind: %v", err)
+	if strings.ToLower(os.Getenv("PROFILE")) == "true" {
+		if profileFile, err := os.Create("./gbus.prof"); err == nil {
+			pprof.StartCPUProfile(profileFile)
+			defer pprof.StopCPUProfile()
+		} else {
+			log.Errorf("Failed to create profiler file: %v", err)
+		}
 	}
-
-	// mainBus.Bind("sampler", "sampler")
 
 	mainBus.Start()
 	mainBus.Join()
