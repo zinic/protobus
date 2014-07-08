@@ -3,6 +3,7 @@ package bus
 import (
 	"fmt"
 	"time"
+	"runtime"
 
 	"github.com/nu7hatch/gouuid"
 
@@ -12,6 +13,7 @@ import (
 )
 
 const (
+	DEFAULT_MAX_TASKS_QUEUED = 32768
 	SHUTDOWN_POLL_INTERVAL = 50 * time.Millisecond
 	DEFAULT_SHUTDOWN_WAIT_DURATION = 5 * time.Second
 )
@@ -50,7 +52,7 @@ func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval
 	return
 }
 
-func NewGBus(busName string) (bus Bus) {
+func NewGBus(name string) (bus Bus) {
 	gbus := &GBus {
 		bindings: make(map[string][]string),
 		bindingsContext: context.NewLockerContext(),
@@ -59,7 +61,13 @@ func NewGBus(busName string) (bus Bus) {
 		actorsContext: context.NewLockerContext(),
 	}
 
-	gbus.taskGroup = concurrent.NewTaskGroup(fmt.Sprintf("%s-tg", busName))
+	tgConfig := &concurrent.TaskGroupConfig {
+		Name: fmt.Sprintf("%s-tg", name),
+		MaxQueuedTasks: DEFAULT_MAX_TASKS_QUEUED,
+		MaxActiveWorkers: runtime.NumCPU(),
+	}
+
+	gbus.taskGroup = concurrent.NewTaskGroup(tgConfig)
 	gbus.eventLoop = NewEventLoop(gbus.scan)
 
 	return gbus
@@ -79,8 +87,10 @@ type GBus struct {
 }
 
 func (gbus *GBus) Start() (err error) {
-	gbus.taskGroup.Schedule(gbus.eventLoop.Loop)
-	gbus.taskGroup.Start()
+	if _, err = gbus.taskGroup.Schedule(gbus.eventLoop.Loop); err == nil {
+		err = gbus.taskGroup.Start()
+	}
+
 	return
 }
 
@@ -95,7 +105,7 @@ func (gbus *GBus) Source(name string) (source Source) {
 }
 
 func (gbus *GBus) Sink(name string) (sink Sink) {
-	gbus.actorsContext(func() {
+	gbus.actorsContext(func () {
 		if actor, found := gbus.actors[name]; found {
 			sink = actor.(Sink)
 		}
@@ -144,7 +154,7 @@ func (gbus *GBus) Bind(source, sink string) (err error) {
 }
 
 func (gbus *GBus) Shutdown() {
-	log.Infof("Shutting down GBus %s.", gbus.taskGroup.Id)
+	log.Infof("Shutting down GBus %s.", gbus.taskGroup.Config.Name)
 
 	gbus.taskGroup.Schedule(func() (err error) {
 		gbus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
@@ -234,7 +244,6 @@ func (gbus *GBus) dispatch(message Message, sinks []string) () {
 	for _, sink := range sinks {
 		sinkInst := gbus.Sink(sink)
 
-		// TODO: Handle sink reply
 		gbus.taskGroup.Schedule(func() (err error) {
 			sinkInst.Push(message)
 			return
@@ -259,7 +268,7 @@ func (gbus *GBus) initActor(name string, actor Actor) {
 
 
 // ===============
-func SimpleSource(pull func() (message Message)) (source Source) {
+func SimpleSource(pull func() (event Event)) (source Source) {
 	return &SimpleActor {
 		pull: pull,
 	}
@@ -271,7 +280,7 @@ func SimpleSink(push func(message Message)) (source Source) {
 }
 
 type SimpleActor struct {
-	pull func() (message Message)
+	pull func() (event Event)
 	push func(message Message)
 }
 
@@ -284,11 +293,21 @@ func (sa *SimpleActor) Shutdown() (err error) {
 }
 
 func (sa *SimpleActor) Push(message Message) {
-	sa.push(message)
+	if sa.push != nil {
+		sa.push(message)
+	} else {
+		log.Warning("Push called on a SimpleActor that has no push method set. Check your bindings.")
+	}
 }
 
 func (sa *SimpleActor) Pull() (reply Event) {
-	return sa.pull()
+	if sa.pull != nil {
+		reply = sa.pull()
+	} else {
+		log.Warning("Pull called on a SimpleActor that has no pull method set. Check your bindings.")
+	}
+
+	return
 }
 
 

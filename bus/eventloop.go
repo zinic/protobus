@@ -34,7 +34,7 @@ func (evloop *EventLoop) Loop() (err error) {
 
 	for !evloop.shutdown.Get().(bool) {
 		if !evloop.callTarget() {
-			time.Sleep(1 * time.Second)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 

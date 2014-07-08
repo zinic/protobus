@@ -8,8 +8,9 @@ import (
 
 	"github.com/zinic/gbus/bus"
 	"github.com/zinic/gbus/log"
-	"github.com/zinic/gbus/sources/unix"
-	"github.com/zinic/gbus/sources/testing"
+	"github.com/zinic/gbus/actors/unix"
+	"github.com/zinic/gbus/actors/zeromq"
+	"github.com/zinic/gbus/actors/testing"
 )
 
 type SignalSink struct {
@@ -43,6 +44,8 @@ func main() {
 	mainBus := bus.NewGBus("main")
 
 	mainBus.RegisterActor("sampler", &testing.Sampler{})
+	mainBus.RegisterActor("zeromq::sender", &zeromq.ZMQSink{})
+	mainBus.RegisterActor("zeromq::server", &zeromq.ZMQSource{})
 	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
 	mainBus.RegisterActor("main::signal_sink", &SignalSink {
 		controllerBus: mainBus,

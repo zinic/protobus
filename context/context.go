@@ -16,26 +16,17 @@ func init() {
 	ERROR_TYPE = reflect.TypeOf((*error)(nil)).Elem()
 }
 
-type Context func(call interface{}) (err error)
+type Context func(call interface{}, args... interface{}) (err error)
 type ContextBound func(args... interface{}) (err error)
 type ContextProvider func(call ContextBound, args... interface{}) (err error)
 
 func Using(context ContextProvider) (ctx Context) {
-	cc := &CallContext {
-		context: context,
-	}
-
-	return func(call interface{}) (err error) {
-		return cc.Wrap(call).Run()
+	return func(call interface{}, args... interface{}) (err error) {
+		return bridgeCalls(call)(args)
 	}
 }
 
-type CallContext struct {
-	call ContextBound
-	context ContextProvider
-}
-
-func (cc *CallContext) Wrap(call interface{}) (chainCtx *CallContext) {
+func bridgeCalls(call interface{}) (ctxBound ContextBound) {
 	// Some minor typechecking
 	callValue := reflect.ValueOf(call)
 	callType := callValue.Type()
@@ -43,11 +34,21 @@ func (cc *CallContext) Wrap(call interface{}) (chainCtx *CallContext) {
 	fProxy := func(in []reflect.Value) (retvals []reflect.Value) {
 		// Correctly invoke the call
 		var callOutput []reflect.Value
-
-		if callType.NumIn() > 0 {
-			callOutput = callValue.Call(in)
-		} else {
+		if callType.NumIn() == 0 {
 			callOutput = callValue.Call(make([]reflect.Value, 0))
+		} else {
+			if args, typeOk := in[0].Interface().([]interface{}); !typeOk || len(args) != 1 {
+				panic("Interface reflect.Value of type []interface{} expected for args.")
+			} else if rawArgs, typeOk := args[0].([]interface{}); !typeOk {
+				panic("Interface []interface{} expected for args.")
+			} else {
+				translatedArgs := make([]reflect.Value, len(rawArgs))
+				for idx, arg := range rawArgs {
+					translatedArgs[idx] = reflect.ValueOf(arg)
+				}
+
+				callOutput = callValue.Call(translatedArgs)
+			}
 		}
 
 		if len(callOutput) == 0 {
@@ -73,20 +74,10 @@ func (cc *CallContext) Wrap(call interface{}) (chainCtx *CallContext) {
 	}
 
 	// Create the function to handle the type bridging
-	var ctxBound ContextBound
 	ctxBoundFn := reflect.ValueOf(&ctxBound).Elem()
 	callWrapper := reflect.MakeFunc(ctxBoundFn.Type(), fProxy)
 	ctxBoundFn.Set(callWrapper)
-
-	// Set the new function as our call
-	cc.call = ctxBound
-
-	// Return ourself to complete the chain
-	return cc
-}
-
-func (cc *CallContext) Run(args... interface{}) (err error) {
-	return cc.context(cc.call, args)
+	return
 }
 
 func NewLockerContext() (context Context) {
