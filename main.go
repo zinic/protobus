@@ -2,9 +2,8 @@ package main
 
 import (
 	"os"
-	"strings"
+	"time"
 	"syscall"
-	"runtime/pprof"
 
 	"github.com/zinic/gbus/bus"
 	"github.com/zinic/gbus/log"
@@ -13,58 +12,54 @@ import (
 	"github.com/zinic/gbus/actors/testing"
 )
 
-type SignalSink struct {
-	controllerBus bus.Bus
-}
-
-func (uss *SignalSink) Init(actx bus.ActorContext) (err error) {
-	return
-}
-
-func (uss *SignalSink) Shutdown() (err error) {
-	return
-}
-
-func (uss *SignalSink) Push(message bus.Message) {
-	msgPayload := message.Payload()
-	if sig, typeOk := msgPayload.(os.Signal); typeOk {
-		switch sig {
-			case os.Interrupt:
-				uss.controllerBus.Shutdown()
-
-			case syscall.SIGTERM:
-				uss.controllerBus.Shutdown()
-		}
-	}
-}
-
 func main() {
 	log.Info("Starting GBus")
-
 	mainBus := bus.NewGBus("main")
 
-	mainBus.RegisterActor("sampler", &testing.Sampler{})
-	mainBus.RegisterActor("zeromq::sender", &zeromq.ZMQSink{})
-	mainBus.RegisterActor("zeromq::server", &zeromq.ZMQSource{})
-	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
-	mainBus.RegisterActor("main::signal_sink", &SignalSink {
-		controllerBus: mainBus,
+	mainSignalSink := bus.SimpleSink(func(message bus.Message) {
+		msgPayload := message.Payload()
+		if sig, typeOk := msgPayload.(os.Signal); typeOk {
+			switch sig {
+				case os.Interrupt:
+					mainBus.Shutdown()
+
+				case syscall.SIGTERM:
+					mainBus.Shutdown()
+			}
+		}
 	})
 
-	if err := mainBus.Bind("unix::signal_source", "main::signal_sink"); err != nil {
-		log.Errorf("Failed during bind: %v", err)
+	mainDebugSink := bus.SimpleSink(func(message bus.Message) {
+		log.Infof("Caught message %v", message)
+	})
+
+	injectorEvent := bus.NewEvent("testing::injector", "testing")
+	injectorSource := testing.Injector(injectorEvent, 2 * time.Second)
+
+	mainBus.RegisterActor("zeromq::sender", &zeromq.ZMQSink{})
+	mainBus.RegisterActor("zeromq::server", &zeromq.ZMQSource{})
+	mainBus.RegisterActor("testing::injector", injectorSource)
+	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
+	mainBus.RegisterActor("main::signal_sink", mainSignalSink)
+	mainBus.RegisterActor("main::debug", mainDebugSink)
+
+	bindings := map[string][]string {
+		"unix::signal_source": []string {
+			"main::signal_sink",
+		},
+		"zeromq::server": []string {
+			"main::debug",
+		},
+		"testing::injector": []string {
+			"zeromq::sender",
+		},
 	}
 
-	if err := mainBus.Bind("sampler", "sampler"); err != nil {
-		log.Errorf("Failed during bind: %v", err)
-	}
-
-	if strings.ToLower(os.Getenv("PROFILE")) == "true" {
-		if profileFile, err := os.Create("./gbus.prof"); err == nil {
-			pprof.StartCPUProfile(profileFile)
-			defer pprof.StopCPUProfile()
-		} else {
-			log.Errorf("Failed to create profiler file: %v", err)
+	for source, sinks := range bindings {
+		for _, sink := range sinks {
+			if err := mainBus.Bind(source, sink); err != nil {
+				log.Errorf("Failed during bind of source %s to sink %s: %v", source, sink, err)
+			}
 		}
 	}
 

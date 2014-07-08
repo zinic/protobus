@@ -1,7 +1,7 @@
 package zeromq
 
 import (
-	"fmt"
+	"syscall"
 	"encoding/json"
 	zmq "github.com/pebbe/zmq4"
 
@@ -15,7 +15,9 @@ type ZMQSink struct {
 
 func (zmqs *ZMQSink) Init(actx bus.ActorContext) (err error) {
 	if zmqs.socket, err = zmq.NewSocket(zmq.PUSH); err == nil {
-		zmqs.socket = nil
+		zmqs.socket.Connect("tcp://127.0.0.1:5555")
+	} else {
+		log.Errorf("Failed to init ZMQ PUSH socket: %v", err)
 	}
 
 	return
@@ -37,9 +39,6 @@ func (zmqs *ZMQSink) Push(message bus.Message) {
 
 	if json, err := json.Marshal(output); err == nil {
 		go func(b []byte, socket *zmq.Socket) {
-			octetCount := fmt.Sprintf("%d", len(b))
-			b = append([]byte(octetCount), b...)
-
 			for sent := 0; sent < len(b); {
 				if written, err := socket.SendBytes(b[sent:], 0); err == nil {
 					sent += written
@@ -68,7 +67,9 @@ type ZMQSource struct {
 
 func (zmqs *ZMQSource) Init(actx bus.ActorContext) (err error) {
 	if zmqs.socket, err = zmq.NewSocket(zmq.PULL); err == nil {
-		zmqs.socket = nil
+		err = zmqs.socket.Bind("tcp://127.0.0.1:5555")
+	} else {
+		log.Errorf("Failed to init ZMQ PULL socket: %v", err)
 	}
 
 	return
@@ -81,12 +82,14 @@ func (zmqs *ZMQSource) Shutdown() (err error) {
 
 func (zmqs *ZMQSource) Pull() (reply bus.Event) {
 	if recvStr, err := zmqs.socket.Recv(zmq.DONTWAIT); err != nil {
-		log.Errorf("Magic failure: %v", err)
-	} else if len(recvStr) > 0 {
+		if err != syscall.EAGAIN {
+			log.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
+		}
+	} else {
 		data := []byte(recvStr)
 
-		idx := 0
-		for idx < len(data) {
+		var idx int
+		for idx = 0; idx < len(data); idx++ {
 			switch data[idx] {
 				case '{':
 					zmqs.jsonTreeDepth += 1
@@ -95,6 +98,7 @@ func (zmqs *ZMQSource) Pull() (reply bus.Event) {
 			}
 
 			if zmqs.jsonTreeDepth == 0 {
+				idx += 1
 				break
 			}
 		}
@@ -107,8 +111,10 @@ func (zmqs *ZMQSource) Pull() (reply bus.Event) {
 
 			zmqs.msgBuffer = append(zmqs.msgBuffer, data[:idx]...)
 
-			if err = json.Unmarshal(zmqs.msgBuffer, input); err == nil {
+			if err = json.Unmarshal(zmqs.msgBuffer, &input); err == nil {
 				reply = bus.NewEvent(input.Action, input.Payload)
+			} else {
+				log.Errorf("Failed to parse JSON message: %v", err)
 			}
 
 			zmqs.msgBuffer = data[idx:]

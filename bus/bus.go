@@ -127,28 +127,16 @@ func (gbus *GBus) Bindings() (bindingsCopy map[string][]string) {
 }
 
 func (gbus *GBus) Bind(source, sink string) (err error) {
-	gbus.actorsContext(func() {
-		if _, found := gbus.actors[source]; !found {
-			err = fmt.Errorf("No source %s registered.", source)
+	gbus.bindingsContext(func() {
+		sinks := gbus.bindings[source]
+
+		if sinks == nil {
+			sinks = make([]string, 0)
 		}
 
-		if _, found := gbus.actors[sink]; !found {
-			err = fmt.Errorf("No sinke %s registered.", sink)
-		}
+		sinks = append(sinks, sink)
+		gbus.bindings[source] = sinks
 	})
-
-	if err == nil {
-		gbus.bindingsContext(func() {
-			sinks := gbus.bindings[source]
-
-			if sinks == nil {
-				sinks = make([]string, 0)
-			}
-
-			sinks = append(sinks, sink)
-			gbus.bindings[source] = sinks
-		})
-	}
 
 	return
 }
@@ -214,13 +202,24 @@ func (gbus *GBus) RegisterTask(task concurrent.Task) (handle Handle, err error) 
 }
 
 func (gbus *GBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
-	gbus.actorsContext(func() {
-		if _, found := gbus.actors[name]; !found {
-			gbus.actors[name] = actor
-			gbus.initActor(name, actor)
-		} else {
-			err = fmt.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
+	ctx := &GBusActorContext {
+		bus: gbus,
+	}
+
+	gbus.taskGroup.Schedule(func() (err error) {
+		if err := actor.Init(ctx); err != nil {
+			log.Errorf("Actor %s failed to initialize: %v.", name, err)
 		}
+
+		gbus.actorsContext(func() {
+			if _, found := gbus.actors[name]; !found {
+				gbus.actors[name] = actor
+			} else {
+				err = fmt.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
+			}
+		})
+
+		return
 	})
 
 	return
@@ -232,11 +231,16 @@ func (gbus *GBus) scan() (eventProcessed bool) {
 	for source, sinks := range gbus.Bindings() {
 		sourceInst := gbus.Source(source)
 
+		if sourceInst == nil {
+			continue
+		}
+
 		if sourceReply := sourceInst.Pull(); sourceReply != nil {
 			eventProcessed = true
 			gbus.dispatch(NewMessage(sourceInst, sourceReply), sinks)
 		}
 	}
+
 	return
 }
 
@@ -244,26 +248,15 @@ func (gbus *GBus) dispatch(message Message, sinks []string) () {
 	for _, sink := range sinks {
 		sinkInst := gbus.Sink(sink)
 
+		if sinkInst == nil {
+			continue
+		}
+
 		gbus.taskGroup.Schedule(func() (err error) {
 			sinkInst.Push(message)
 			return
 		})
 	}
-}
-
-func (gbus *GBus) initActor(name string, actor Actor) {
-	ctx := &GBusActorContext {
-		bus: gbus,
-	}
-
-	gbus.taskGroup.Schedule(func() (err error) {
-		if err := actor.Init(ctx); err != nil {
-			log.Errorf("Actor %s failed to initialize: %v.", name, err)
-			gbus.Shutdown()
-		}
-
-		return
-	})
 }
 
 

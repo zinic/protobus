@@ -3,6 +3,7 @@ package bus
 import (
 	"time"
 	"sync"
+	"runtime"
 
 	"github.com/zinic/gbus/concurrent"
 )
@@ -35,6 +36,8 @@ func (evloop *EventLoop) Loop() (err error) {
 	for !evloop.shutdown.Get().(bool) {
 		if !evloop.callTarget() {
 			time.Sleep(50 * time.Millisecond)
+		} else {
+			runtime.Gosched()
 		}
 	}
 
