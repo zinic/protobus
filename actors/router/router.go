@@ -5,7 +5,7 @@ package testing
 import (
 	"time"
 
-	"github.com/zinic/gbus/bus"
+	"github.com/zinic/protobus/bus"
 )
 
 func NewRouter([]string seedNodes) (actor bus.Actor) {

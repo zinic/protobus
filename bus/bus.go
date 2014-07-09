@@ -5,9 +5,9 @@ import (
 	"time"
 	"runtime"
 
-	"github.com/zinic/gbus/log"
-	"github.com/zinic/gbus/context"
-	"github.com/zinic/gbus/concurrent"
+	"github.com/zinic/protobus/log"
+	"github.com/zinic/protobus/context"
+	"github.com/zinic/protobus/concurrent"
 )
 
 const (
@@ -66,7 +66,7 @@ func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval
 }
 
 func NewProtoBus(name string) (bus Bus) {
-	gbus := &ProtoBus {
+	protobus := &ProtoBus {
 		bindings: make(map[string][]string),
 		bindingsContext: context.NewLockerContext(),
 
@@ -80,10 +80,10 @@ func NewProtoBus(name string) (bus Bus) {
 		MaxActiveWorkers: runtime.NumCPU(),
 	}
 
-	gbus.taskGroup = concurrent.NewTaskGroup(tgConfig)
-	gbus.eventLoop = NewEventLoop(gbus.scan)
+	protobus.taskGroup = concurrent.NewTaskGroup(tgConfig)
+	protobus.eventLoop = NewEventLoop(protobus.scan)
 
-	return gbus
+	return protobus
 }
 
 
@@ -99,17 +99,17 @@ type ProtoBus struct {
 	actorsContext context.Context
 }
 
-func (gbus *ProtoBus) Start() (err error) {
-	if _, err = gbus.taskGroup.Schedule(gbus.eventLoop.Loop); err == nil {
-		err = gbus.taskGroup.Start()
+func (protobus *ProtoBus) Start() (err error) {
+	if _, err = protobus.taskGroup.Schedule(protobus.eventLoop.Loop); err == nil {
+		err = protobus.taskGroup.Start()
 	}
 
 	return
 }
 
-func (gbus *ProtoBus) Source(name string) (source Source) {
-	gbus.actorsContext(func() {
-		if actor, found := gbus.actors[name]; found {
+func (protobus *ProtoBus) Source(name string) (source Source) {
+	protobus.actorsContext(func() {
+		if actor, found := protobus.actors[name]; found {
 			source = actor.(Source)
 		}
 	})
@@ -117,9 +117,9 @@ func (gbus *ProtoBus) Source(name string) (source Source) {
 	return
 }
 
-func (gbus *ProtoBus) Sink(name string) (sink Sink) {
-	gbus.actorsContext(func () {
-		if actor, found := gbus.actors[name]; found {
+func (protobus *ProtoBus) Sink(name string) (sink Sink) {
+	protobus.actorsContext(func () {
+		if actor, found := protobus.actors[name]; found {
 			sink = actor.(Sink)
 		}
 	})
@@ -127,11 +127,11 @@ func (gbus *ProtoBus) Sink(name string) (sink Sink) {
 	return
 }
 
-func (gbus *ProtoBus) Bindings() (bindingsCopy map[string][]string) {
+func (protobus *ProtoBus) Bindings() (bindingsCopy map[string][]string) {
 	bindingsCopy = make(map[string][]string)
 
-	gbus.bindingsContext(func() {
-		for k, v := range gbus.bindings {
+	protobus.bindingsContext(func() {
+		for k, v := range protobus.bindings {
 			bindingsCopy[k] = v
 		}
 	})
@@ -139,46 +139,46 @@ func (gbus *ProtoBus) Bindings() (bindingsCopy map[string][]string) {
 	return
 }
 
-func (gbus *ProtoBus) Bind(source, sink string) (err error) {
-	gbus.bindingsContext(func() {
-		sinks := gbus.bindings[source]
+func (protobus *ProtoBus) Bind(source, sink string) (err error) {
+	protobus.bindingsContext(func() {
+		sinks := protobus.bindings[source]
 
 		if sinks == nil {
 			sinks = make([]string, 0)
 		}
 
 		sinks = append(sinks, sink)
-		gbus.bindings[source] = sinks
+		protobus.bindings[source] = sinks
 	})
 
 	return
 }
 
-func (gbus *ProtoBus) Shutdown() {
-	log.Infof("Shutting down ProtoBus %s.", gbus.taskGroup.Config.Name)
+func (protobus *ProtoBus) Shutdown() {
+	log.Infof("Shutting down ProtoBus %s.", protobus.taskGroup.Config.Name)
 
-	gbus.taskGroup.Schedule(func() (err error) {
-		gbus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
+	protobus.taskGroup.Schedule(func() (err error) {
+		protobus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
 		return
 	})
 }
 
-func (gbus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
+func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
 	// Wait for the evloop to exit
-	gbus.eventLoop.Stop()
+	protobus.eventLoop.Stop()
 
 	// ---
 	activeTasks := 0
-	shutdownChan := make(chan int, len(gbus.actors))
+	shutdownChan := make(chan int, len(protobus.actors))
 
-	for source, _ := range gbus.bindings {
-		if actor, found := gbus.actors[source]; found {
+	for source, _ := range protobus.bindings {
+		if actor, found := protobus.actors[source]; found {
 			activeTasks += 1
-			delete(gbus.actors, source)
+			delete(protobus.actors, source)
 
 			log.Infof("Scheduling shutdown of: %s", source)
 
-			gbus.taskGroup.Schedule(func() (err error) {
+			protobus.taskGroup.Schedule(func() (err error) {
 				shutdownActor(source, actor, shutdownChan)
 				return
 			})
@@ -187,13 +187,13 @@ func (gbus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Dura
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
 
 	activeTasks = 0
-	for _, sinks := range gbus.bindings {
+	for _, sinks := range protobus.bindings {
 		for _, sink := range sinks {
-			if actor, found := gbus.actors[sink]; found {
+			if actor, found := protobus.actors[sink]; found {
 				activeTasks += 1
-				delete(gbus.actors, sink)
+				delete(protobus.actors, sink)
 
-				gbus.taskGroup.Schedule(func() (err error) {
+				protobus.taskGroup.Schedule(func() (err error) {
 					shutdownActor(sink, actor, shutdownChan)
 					return
 				})
@@ -202,33 +202,33 @@ func (gbus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Dura
 	}
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
 
-	gbus.taskGroup.Stop()
+	protobus.taskGroup.Stop()
 	return
 }
 
-func (gbus *ProtoBus) Join() (err error) {
-	gbus.taskGroup.Join()
+func (protobus *ProtoBus) Join() (err error) {
+	protobus.taskGroup.Join()
 	return
 }
 
-func (gbus *ProtoBus) RegisterTask(task concurrent.Task) (handle Handle, err error) {
-	gbus.taskGroup.Schedule(task)
+func (protobus *ProtoBus) RegisterTask(task concurrent.Task) (handle Handle, err error) {
+	protobus.taskGroup.Schedule(task)
 	return
 }
 
-func (gbus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
+func (protobus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
 	ctx := &ProtoBusActorContext {
-		bus: gbus,
+		bus: protobus,
 	}
 
-	gbus.taskGroup.Schedule(func() (err error) {
+	protobus.taskGroup.Schedule(func() (err error) {
 		if err := actor.Init(ctx); err != nil {
 			log.Errorf("Actor %s failed to initialize: %v.", name, err)
 		}
 
-		gbus.actorsContext(func() {
-			if _, found := gbus.actors[name]; !found {
-				gbus.actors[name] = actor
+		protobus.actorsContext(func() {
+			if _, found := protobus.actors[name]; !found {
+				protobus.actors[name] = actor
 			} else {
 				err = fmt.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
 			}
@@ -240,11 +240,11 @@ func (gbus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, e
 	return
 }
 
-func (gbus *ProtoBus) scan() (eventProcessed bool) {
+func (protobus *ProtoBus) scan() (eventProcessed bool) {
 	eventProcessed = false
 
-	for source, sinks := range gbus.Bindings() {
-		sourceInst := gbus.Source(source)
+	for source, sinks := range protobus.Bindings() {
+		sourceInst := protobus.Source(source)
 
 		if sourceInst == nil {
 			continue
@@ -252,22 +252,22 @@ func (gbus *ProtoBus) scan() (eventProcessed bool) {
 
 		if sourceReply := sourceInst.Pull(); sourceReply != nil {
 			eventProcessed = true
-			gbus.dispatch(sourceReply, sinks)
+			protobus.dispatch(sourceReply, sinks)
 		}
 	}
 
 	return
 }
 
-func (gbus *ProtoBus) dispatch(event Event, sinks []string) () {
+func (protobus *ProtoBus) dispatch(event Event, sinks []string) () {
 	for _, sink := range sinks {
-		sinkInst := gbus.Sink(sink)
+		sinkInst := protobus.Sink(sink)
 
 		if sinkInst == nil {
 			continue
 		}
 
-		gbus.taskGroup.Schedule(func() (err error) {
+		protobus.taskGroup.Schedule(func() (err error) {
 			sinkInst.Push(event)
 			return
 		})

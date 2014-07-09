@@ -5,11 +5,11 @@ import (
 	"time"
 	"syscall"
 
-	"github.com/zinic/gbus/bus"
-	"github.com/zinic/gbus/log"
-	"github.com/zinic/gbus/actors/unix"
-	"github.com/zinic/gbus/actors/zeromq"
-	"github.com/zinic/gbus/actors/testing"
+	"github.com/zinic/protobus/bus"
+	"github.com/zinic/protobus/log"
+	"github.com/zinic/protobus/actors/unix"
+	"github.com/zinic/protobus/actors/zeromq"
+	"github.com/zinic/protobus/actors/testing"
 )
 
 func main() {
@@ -24,9 +24,13 @@ func main() {
 	eventPayload := &zeromq.Message {Destination: "tcp://127.0.0.1:5555", Contents: "testing"}
 	injectorEvent := bus.NewEvent("testing::injector", eventPayload)
 
-	// Next we create the actual injector source and then register it
-	injectorSource := testing.Injector(injectorEvent, 1 * time.Second)
-	mainBus.RegisterActor("testing::injector", injectorSource)
+	// Next we create the actual injector sources and then register them
+	mainBus.RegisterActor("testing::injector_a", testing.Injector(injectorEvent, 1 * time.Second))
+	mainBus.RegisterActor("testing::injector_b", testing.Injector(injectorEvent, 2 * time.Second))
+	mainBus.RegisterActor("testing::injector_c", testing.Injector(injectorEvent, 100 * time.Millisecond))
+	mainBus.RegisterActor("testing::injector_d", testing.Injector(injectorEvent, 500 * time.Millisecond))
+	mainBus.RegisterActor("testing::injector_e", testing.Injector(injectorEvent, 5 * time.Second))
+	mainBus.RegisterActor("testing::injector_f", testing.Injector(injectorEvent, 15 * time.Second))
 
 	// Register Unix signal handling for catching interrupts and shutting down. Using the
 	// SimpleSink function allows us to create a sink without having to have the additional
@@ -61,7 +65,22 @@ func main() {
 		"zeromq::server": []string {
 			"main::debug",
 		},
-		"testing::injector": []string {
+		"testing::injector_a": []string {
+			"zeromq::sender",
+		},
+		"testing::injector_b": []string {
+			"zeromq::sender",
+		},
+		"testing::injector_c": []string {
+			"zeromq::sender",
+		},
+		"testing::injector_d": []string {
+			"zeromq::sender",
+		},
+		"testing::injector_e": []string {
+			"zeromq::sender",
+		},
+		"testing::injector_f": []string {
 			"zeromq::sender",
 		},
 	}

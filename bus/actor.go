@@ -1,7 +1,7 @@
 package bus
 
 import (
-	"github.com/zinic/gbus/log"
+	"github.com/zinic/protobus/log"
 )
 
 // Interfaces

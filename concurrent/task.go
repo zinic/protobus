@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"runtime/debug"
 
-	"github.com/zinic/gbus/log"
-	"github.com/zinic/gbus/context"
+	"github.com/zinic/protobus/log"
+	"github.com/zinic/protobus/context"
 )
 
 

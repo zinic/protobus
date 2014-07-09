@@ -1,7 +1,7 @@
 package concurrent
 
 import (
-	"github.com/zinic/gbus/context"
+	"github.com/zinic/protobus/context"
 )
 
 func NewReferenceLocker(contents interface{}) (rl ReferenceLocker) {

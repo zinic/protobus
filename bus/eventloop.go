@@ -5,7 +5,7 @@ import (
 	"sync"
 	"runtime"
 
-	"github.com/zinic/gbus/concurrent"
+	"github.com/zinic/protobus/concurrent"
 )
 
 func NewEventLoop(callTarget func() (yieldExecution bool)) (el *EventLoop) {

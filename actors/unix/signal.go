@@ -5,8 +5,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/zinic/gbus/bus"
-	"github.com/zinic/gbus/log"
+	"github.com/zinic/protobus/bus"
+	"github.com/zinic/protobus/log"
 )
 
 

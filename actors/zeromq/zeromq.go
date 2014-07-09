@@ -5,10 +5,10 @@ import (
 	"syscall"
 	zmq "github.com/pebbe/zmq4"
 
-	"github.com/zinic/gbus/bus"
-	"github.com/zinic/gbus/log"
-	"github.com/zinic/gbus/context"
-	"github.com/zinic/gbus/concurrent"
+	"github.com/zinic/protobus/bus"
+	"github.com/zinic/protobus/log"
+	"github.com/zinic/protobus/context"
+	"github.com/zinic/protobus/concurrent"
 )
 
 type Message struct {

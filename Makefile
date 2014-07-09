@@ -1,7 +1,7 @@
 ## Generic Go Makefile
 
 ## Project name and parent are used in conjunction to create a pkg path
-project = gbus
+project = protobus
 project_parent = github.com/zinic
 
 

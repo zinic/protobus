@@ -3,7 +3,7 @@ package testing
 import (
 	"time"
 
-	"github.com/zinic/gbus/bus"
+	"github.com/zinic/protobus/bus"
 )
 
 func Injector(event bus.Event, injectionInterval time.Duration) (source bus.Source) {

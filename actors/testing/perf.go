@@ -3,8 +3,8 @@ package testing
 import (
 	"time"
 
-	"github.com/zinic/gbus/bus"
-	"github.com/zinic/gbus/log"
+	"github.com/zinic/protobus/bus"
+	"github.com/zinic/protobus/log"
 )
 
 type Sampler struct {
