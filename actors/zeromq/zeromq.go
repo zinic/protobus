@@ -20,24 +20,101 @@ type Message struct {
 type MessageMarshaller func(value interface{}) (data []byte, err error)
 type MessageUnmarshaller func(data []byte, value interface{}) (unmarshalled bool, err error)
 
+type SocketContext struct {
+	socket *zmq.Socket
+	workChannel chan []byte
+}
+
 type SocketManager struct {
-	sockets map[string]*zmq.Socket
+	sockets map[string]*SocketContext
+	activeSockets []string
 	socketsContext context.Context
 	socketWorkerGroup *concurrent.TaskGroup
 }
 
-func (sm *SocketManager) pushSocket(addr string) (socket *zmq.Socket, err error) {
-	if addr != "" {
-		sm.socketsContext(func() {
-			if socket = sm.sockets[addr]; socket == nil {
-				if socket, err = zmq.NewSocket(zmq.PUSH); err == nil {
-					err = socket.Connect(addr)
+func (sm *SocketManager) SetInactive(addr string) {
+	var idx int
+	for idx = 0; idx < len(sm.activeSockets); idx++ {
+		if sm.activeSockets[idx] == addr {
+			sm.activeSockets = append(sm.activeSockets[:idx], sm.activeSockets[idx+1:]...)
+			break
+		}
+	}
+}
+
+func (sm *SocketManager) SetActive(addr string) {
+	sm.activeSockets = append(sm.activeSockets, addr)
+}
+
+func (sm *SocketManager) Active(addr string) (active bool) {
+	active = false
+	for _, activeAddr := range sm.activeSockets {
+		if activeAddr == addr {
+			active = true
+			break
+		}
+	}
+
+	return
+}
+
+func (sm *SocketManager) send(socket *zmq.Socket, data []byte) (err error) {
+	for sent := 0; sent < len(data); {
+		if written, err := socket.SendBytes(data[sent:], 0); err == nil {
+			sent += written
+		} else {
+			log.Errorf("ZMQ send failed: %v", err)
+			break
+		}
+	}
+
+	return
+}
+
+func (sm *SocketManager) Send(dst string, data []byte) (err error) {
+	sm.socketsContext(func() {
+		socketCtx := sm.sockets[dst]
+
+		if socketCtx == nil {
+			var socket *zmq.Socket
+
+			if socket, err = zmq.NewSocket(zmq.PUSH); err == nil {
+				if err = socket.Connect(dst); err == nil {
+					socketCtx = &SocketContext {
+						socket: socket,
+						workChannel: make(chan []byte, 4096),
+					}
 				}
 			}
-		})
-	} else {
-		err = fmt.Errorf("Destination specified for message is empty.")
-	}
+		}
+
+		if socketCtx != nil {
+			socketCtx.workChannel <- data
+
+			if !sm.Active(dst) {
+				sm.SetActive(dst)
+
+				var socketSend func() (err error)
+				socketSend = func() (err error) {
+					select {
+						case event := <- socketCtx.workChannel:
+							sm.send(socketCtx.socket, event)
+							sm.socketWorkerGroup.Schedule(socketSend)
+
+						default:
+							sm.SetInactive(dst)
+					}
+
+					return
+				}
+
+				sm.socketWorkerGroup.Schedule(socketSend)
+			}
+		} else {	log.Infof("Sending %v %v", dst, data)
+
+			err = fmt.Errorf("No destination %s found.", dst)
+		}
+	})
 
 	return
 }
@@ -49,7 +126,7 @@ func DefaultZMQSink() (sink bus.Sink) {
 func NewZMQSink(marshaller MessageMarshaller) (sink bus.Sink) {
 	return &ZMQSink {
 		SocketManager {
-			sockets: make(map[string]*zmq.Socket),
+			sockets: make(map[string]*SocketContext),
 			socketsContext: context.NewLockerContext(),
 			socketWorkerGroup: concurrent.NewTaskGroup(&concurrent.TaskGroupConfig {
 				Name: "zmq-workers",
@@ -67,18 +144,22 @@ type ZMQSink struct {
 }
 
 func (zmqs *ZMQSink) Init(actx bus.ActorContext) (err error) {
+	zmqs.socketWorkerGroup.Start()
+
 	return
 }
 
 func (zmqs *ZMQSink) Shutdown() (err error) {
+	zmqs.socketWorkerGroup.Stop()
+	zmqs.socketWorkerGroup.Join()
+
 	zmqs.socketsContext(func() {
-		for _, sock := range zmqs.sockets {
-			sock.Close()
+		for _, sockCtx := range zmqs.sockets {
+			sockCtx.socket.Close()
 		}
 
-		zmqs.sockets = make(map[string]*zmq.Socket)
+		zmqs.sockets = make(map[string]*SocketContext)
 	})
-
 	return
 }
 
@@ -96,22 +177,9 @@ func (zmqs *ZMQSink) Push(event bus.Event) {
 			}
 
 			if data, err := zmqs.marshaller(output); err == nil {
-				if socket, err := zmqs.pushSocket(message.Destination); err == nil {
-					go func() {
-						for sent := 0; sent < len(data); {
-							if written, err := socket.SendBytes(data[sent:], 0); err == nil {
-								sent += written
-							} else {
-								log.Errorf("ZMQ send failed: %v", err)
-								break
-							}
-						}
-					}()
-				} else {
-					log.Errorf("Failed to get socket for %s: %v", message.Destination, err)
-				}
+				zmqs.Send(message.Destination, data)
 			} else {
-				log.Errorf("Failed to JSON encode %v: %v", output, err)
+				log.Errorf("Failed to encode %v: %v", output, err)
 			}
 		}
 	}
