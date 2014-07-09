@@ -16,9 +16,9 @@ func main() {
 	log.Info("Starting GBus")
 	mainBus := bus.NewGBus("main")
 
-	mainSignalSink := bus.SimpleSink(func(message bus.Message) {
-		msgPayload := message.Payload()
-		if sig, typeOk := msgPayload.(os.Signal); typeOk {
+	mainSignalSink := bus.SimpleSink(func(event bus.Event) {
+		payload := event.Payload()
+		if sig, typeOk := payload.(os.Signal); typeOk {
 			switch sig {
 				case os.Interrupt:
 					mainBus.Shutdown()
@@ -29,15 +29,15 @@ func main() {
 		}
 	})
 
-	mainDebugSink := bus.SimpleSink(func(message bus.Message) {
-		log.Infof("Caught message %v", message)
+	mainDebugSink := bus.SimpleSink(func(event bus.Event) {
+		log.Infof("Caught event %v", event)
 	})
 
-	injectorEvent := bus.NewEvent("testing::injector", "testing")
-	injectorSource := testing.Injector(injectorEvent, 2 * time.Second)
+	injectorEvent := bus.NewEvent("testing::injector", &zeromq.Message {Destination: "tcp://127.0.0.1:5555", Contents: "testing"})
+	injectorSource := testing.Injector(injectorEvent, 1 * time.Second)
 
-	mainBus.RegisterActor("zeromq::sender", &zeromq.ZMQSink{})
-	mainBus.RegisterActor("zeromq::server", &zeromq.ZMQSource{})
+	mainBus.RegisterActor("zeromq::sender", zeromq.DefaultZMQSink())
+	mainBus.RegisterActor("zeromq::server", zeromq.DefaultZMQGetSource())
 	mainBus.RegisterActor("testing::injector", injectorSource)
 	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
 	mainBus.RegisterActor("main::signal_sink", mainSignalSink)

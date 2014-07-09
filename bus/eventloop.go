@@ -17,7 +17,6 @@ func NewEventLoop(callTarget func() (yieldExecution bool)) (el *EventLoop) {
 }
 
 
-// ===============
 type EventLoop struct {
 	waitGroup *sync.WaitGroup
 	shutdown concurrent.ReferenceLocker

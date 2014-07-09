@@ -29,7 +29,7 @@ func (sampler *Sampler) Shutdown() (err error) {
 	return
 }
 
-func (sampler *Sampler) Push(message bus.Message) {
+func (sampler *Sampler) Push(event bus.Event) {
 	sampler.msgCount++
 	return
 }

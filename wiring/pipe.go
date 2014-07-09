@@ -32,7 +32,7 @@ func (pipe *Pipe) Pull() (reply bus.Event) {
 	select {
 		case msg := <- pipe.msgBuffer:
 			if msg != nil {
-				reply = bus.NewEvent(msg.Action(), msg.Payload())
+				reply = bus.NewEvent(msg.GetAction(), msg.GetPayload())
 			}
 
 		default:
