@@ -65,8 +65,8 @@ func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval
 	return
 }
 
-func NewGBus(name string) (bus Bus) {
-	gbus := &GBus {
+func NewProtoBus(name string) (bus Bus) {
+	gbus := &ProtoBus {
 		bindings: make(map[string][]string),
 		bindingsContext: context.NewLockerContext(),
 
@@ -88,7 +88,7 @@ func NewGBus(name string) (bus Bus) {
 
 
 // ===============
-type GBus struct {
+type ProtoBus struct {
 	eventLoop *EventLoop
 	taskGroup *concurrent.TaskGroup
 
@@ -99,7 +99,7 @@ type GBus struct {
 	actorsContext context.Context
 }
 
-func (gbus *GBus) Start() (err error) {
+func (gbus *ProtoBus) Start() (err error) {
 	if _, err = gbus.taskGroup.Schedule(gbus.eventLoop.Loop); err == nil {
 		err = gbus.taskGroup.Start()
 	}
@@ -107,7 +107,7 @@ func (gbus *GBus) Start() (err error) {
 	return
 }
 
-func (gbus *GBus) Source(name string) (source Source) {
+func (gbus *ProtoBus) Source(name string) (source Source) {
 	gbus.actorsContext(func() {
 		if actor, found := gbus.actors[name]; found {
 			source = actor.(Source)
@@ -117,7 +117,7 @@ func (gbus *GBus) Source(name string) (source Source) {
 	return
 }
 
-func (gbus *GBus) Sink(name string) (sink Sink) {
+func (gbus *ProtoBus) Sink(name string) (sink Sink) {
 	gbus.actorsContext(func () {
 		if actor, found := gbus.actors[name]; found {
 			sink = actor.(Sink)
@@ -127,7 +127,7 @@ func (gbus *GBus) Sink(name string) (sink Sink) {
 	return
 }
 
-func (gbus *GBus) Bindings() (bindingsCopy map[string][]string) {
+func (gbus *ProtoBus) Bindings() (bindingsCopy map[string][]string) {
 	bindingsCopy = make(map[string][]string)
 
 	gbus.bindingsContext(func() {
@@ -139,7 +139,7 @@ func (gbus *GBus) Bindings() (bindingsCopy map[string][]string) {
 	return
 }
 
-func (gbus *GBus) Bind(source, sink string) (err error) {
+func (gbus *ProtoBus) Bind(source, sink string) (err error) {
 	gbus.bindingsContext(func() {
 		sinks := gbus.bindings[source]
 
@@ -154,8 +154,8 @@ func (gbus *GBus) Bind(source, sink string) (err error) {
 	return
 }
 
-func (gbus *GBus) Shutdown() {
-	log.Infof("Shutting down GBus %s.", gbus.taskGroup.Config.Name)
+func (gbus *ProtoBus) Shutdown() {
+	log.Infof("Shutting down ProtoBus %s.", gbus.taskGroup.Config.Name)
 
 	gbus.taskGroup.Schedule(func() (err error) {
 		gbus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
@@ -163,7 +163,7 @@ func (gbus *GBus) Shutdown() {
 	})
 }
 
-func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
+func (gbus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
 	// Wait for the evloop to exit
 	gbus.eventLoop.Stop()
 
@@ -206,18 +206,18 @@ func (gbus *GBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration
 	return
 }
 
-func (gbus *GBus) Join() (err error) {
+func (gbus *ProtoBus) Join() (err error) {
 	gbus.taskGroup.Join()
 	return
 }
 
-func (gbus *GBus) RegisterTask(task concurrent.Task) (handle Handle, err error) {
+func (gbus *ProtoBus) RegisterTask(task concurrent.Task) (handle Handle, err error) {
 	gbus.taskGroup.Schedule(task)
 	return
 }
 
-func (gbus *GBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
-	ctx := &GBusActorContext {
+func (gbus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
+	ctx := &ProtoBusActorContext {
 		bus: gbus,
 	}
 
@@ -240,7 +240,7 @@ func (gbus *GBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err e
 	return
 }
 
-func (gbus *GBus) scan() (eventProcessed bool) {
+func (gbus *ProtoBus) scan() (eventProcessed bool) {
 	eventProcessed = false
 
 	for source, sinks := range gbus.Bindings() {
@@ -259,7 +259,7 @@ func (gbus *GBus) scan() (eventProcessed bool) {
 	return
 }
 
-func (gbus *GBus) dispatch(event Event, sinks []string) () {
+func (gbus *ProtoBus) dispatch(event Event, sinks []string) () {
 	for _, sink := range sinks {
 		sinkInst := gbus.Sink(sink)
 

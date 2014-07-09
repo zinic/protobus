@@ -79,28 +79,28 @@ func (sa *SimpleActor) Pull() (reply Event) {
 }
 
 
-type GBusActorContext struct {
+type ProtoBusActorContext struct {
 	id int64
 	bus Bus
 }
 
-func (gbac *GBusActorContext) Bus() (bus Bus) {
+func (gbac *ProtoBusActorContext) Bus() (bus Bus) {
 	return gbac.bus
 }
 
-func (gbac *GBusActorContext) ActorId() (id int64) {
+func (gbac *ProtoBusActorContext) ActorId() (id int64) {
 	return gbac.id
 }
 
 
-type GBusActorHandle struct {
+type ProtoBusActorHandle struct {
 	id int64
 }
 
-func (gbah *GBusActorHandle) ActorId() (id int64) {
+func (gbah *ProtoBusActorHandle) ActorId() (id int64) {
 	return gbah.id
 }
 
-func (gbah *GBusActorHandle) Kill() (err error) {
+func (gbah *ProtoBusActorHandle) Kill() (err error) {
 	return
 }
