@@ -11,15 +11,6 @@ import (
 	"github.com/zinic/protobus/concurrent"
 )
 
-type Message struct {
-	Contents string
-	Source string
-	Destination string
-}
-
-type MessageMarshaller func(value interface{}) (data []byte, err error)
-type MessageUnmarshaller func(data []byte, value interface{}) (unmarshalled bool, err error)
-
 type SocketContext struct {
 	socket *zmq.Socket
 	workChannel chan []byte
@@ -123,11 +114,11 @@ func DefaultZMQSink() (sink bus.Sink) {
 	return NewZMQSink(JSONMessageMarshaller)
 }
 
-func NewZMQSink(marshaller MessageMarshaller) (sink bus.Sink) {
+func NewZMQSink(marshaller bus.MessageMarshaller) (sink bus.Sink) {
 	return &ZMQSink {
 		SocketManager {
 			sockets: make(map[string]*SocketContext),
-			socketsContext: context.NewLockerContext(),
+			socketsContext: concurrent.NewLockerContext(),
 			socketWorkerGroup: concurrent.NewTaskGroup(&concurrent.TaskGroupConfig {
 				Name: "zmq-workers",
 				MaxQueuedTasks: 4096,
@@ -140,7 +131,7 @@ func NewZMQSink(marshaller MessageMarshaller) (sink bus.Sink) {
 
 type ZMQSink struct {
 	SocketManager
-	marshaller MessageMarshaller
+	marshaller bus.MessageMarshaller
 }
 
 func (zmqs *ZMQSink) Init(actx bus.ActorContext) (err error) {
@@ -167,7 +158,7 @@ func (zmqs *ZMQSink) Push(event bus.Event) {
 	payload := event.Payload()
 
 	if payload != nil {
-		if message, typeOk := payload.(*Message); typeOk {
+		if message, typeOk := payload.(*bus.Message); typeOk {
 			output := struct {
 				Action interface{}
 				Payload interface{}
@@ -190,7 +181,7 @@ func DefaultZMQGetSource() (source bus.Source) {
 	return NewZMQSource(unmarshaller.Unmarshall)
 }
 
-func NewZMQSource(unmarshaller MessageUnmarshaller) (source bus.Source) {
+func NewZMQSource(unmarshaller bus.MessageUnmarshaller) (source bus.Source) {
 	return &ZMQSource {
 		unmarshaller: unmarshaller,
 	}
@@ -198,7 +189,7 @@ func NewZMQSource(unmarshaller MessageUnmarshaller) (source bus.Source) {
 
 type ZMQSource struct {
 	socket *zmq.Socket
-	unmarshaller MessageUnmarshaller
+	unmarshaller bus.MessageUnmarshaller
 }
 
 func (zmqs *ZMQSource) Init(actx bus.ActorContext) (err error) {
@@ -224,7 +215,7 @@ func (zmqs *ZMQSource) Pull() (reply bus.Event) {
 	} else {
 		var event struct {
 			Action interface{}
-			Payload *Message
+			Payload *bus.Message
 		}
 
 		if unmarshalled, err := zmqs.unmarshaller([]byte(recvStr), &event); err == nil && unmarshalled {

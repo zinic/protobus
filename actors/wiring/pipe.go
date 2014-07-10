@@ -1,7 +1,7 @@
 package wiring
 
 import (
-	"github.com/zinic/protobus/bus"
+	"github.com/zinic/protobus/actors/wiring"
 )
 
 func NewPipe(maxBuffered int) (actor bus.Actor) {

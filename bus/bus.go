@@ -27,7 +27,7 @@ type Bus interface {
 
 	Bind(source, sink string) (err error)
 
-	RegisterTask(task concurrent.Task) (handle Handle, err error)
+	RegisterTask(task interface{}) (handle Handle, err error)
 	RegisterActor(name string, actor Actor) (ah ActorHandle, err error)
 }
 
@@ -68,10 +68,10 @@ func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval
 func NewProtoBus(name string) (bus Bus) {
 	protobus := &ProtoBus {
 		bindings: make(map[string][]string),
-		bindingsContext: context.NewLockerContext(),
+		bindingsContext: concurrent.NewLockerContext(),
 
 		actors: make(map[string]Actor),
-		actorsContext: context.NewLockerContext(),
+		actorsContext: concurrent.NewLockerContext(),
 	}
 
 	tgConfig := &concurrent.TaskGroupConfig {
@@ -177,11 +177,7 @@ func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.
 			delete(protobus.actors, source)
 
 			log.Infof("Scheduling shutdown of: %s", source)
-
-			protobus.taskGroup.Schedule(func() (err error) {
-				shutdownActor(source, actor, shutdownChan)
-				return
-			})
+			protobus.taskGroup.Schedule(shutdownActor, source, actor, shutdownChan)
 		}
 	}
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
@@ -193,10 +189,8 @@ func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.
 				activeTasks += 1
 				delete(protobus.actors, sink)
 
-				protobus.taskGroup.Schedule(func() (err error) {
-					shutdownActor(sink, actor, shutdownChan)
-					return
-				})
+				log.Infof("Scheduling shutdown of: %s", sink)
+				protobus.taskGroup.Schedule(shutdownActor, sink, actor, shutdownChan)
 			}
 		}
 	}
@@ -211,7 +205,7 @@ func (protobus *ProtoBus) Join() (err error) {
 	return
 }
 
-func (protobus *ProtoBus) RegisterTask(task concurrent.Task) (handle Handle, err error) {
+func (protobus *ProtoBus) RegisterTask(task interface{}) (handle Handle, err error) {
 	protobus.taskGroup.Schedule(task)
 	return
 }

@@ -21,7 +21,7 @@ func main() {
 	mainBus.RegisterActor("zeromq::server", zeromq.DefaultZMQGetSource())
 
 	// A testing source that injects events every second. First we create the event we want to inject
-	eventPayload := &zeromq.Message {Destination: "tcp://127.0.0.1:5555", Contents: "testing"}
+	eventPayload := &bus.Message {Destination: "tcp://127.0.0.1:5555", Contents: "testing"}
 	injectorEvent := bus.NewEvent("testing::injector", eventPayload)
 
 	// Next we create the actual injector sources and then register them

@@ -7,17 +7,15 @@ import (
 	"runtime/debug"
 
 	"github.com/zinic/protobus/log"
+	"github.com/zinic/protobus/meta"
 	"github.com/zinic/protobus/context"
 )
-
-
-type Task func() (err error)
-type ErrorHandler func(err error)
 
 type TaskContext struct {
 	Id int64
 	status string
-	task Task
+	call interface{}
+	args []interface{}
 	editContext context.Context
 }
 
@@ -39,7 +37,7 @@ func NewTaskGroup(config *TaskGroupConfig) (tg *TaskGroup) {
 		nextTaskId: 0,
 		closed: NewReferenceLocker(false),
 		waitGroup: &sync.WaitGroup{},
-		editContext: context.NewLockerContext(),
+		editContext: NewLockerContext(),
 	}
 }
 
@@ -77,12 +75,11 @@ func (tg *TaskGroup) dispatch(taskCtx *TaskContext) {
 		if recovery := recover(); recovery != nil {
 			log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n",
 				taskCtx.Id, recovery, debug.Stack())
-			panic("ASS")
 		}
 	}()
 
 	if !tg.closed.Get().(bool) {
-		if err := taskCtx.task(); err != nil {
+		if _, err := meta.Call(taskCtx.call, taskCtx.args); err != nil {
 			log.Infof("Error caught from task: %v", err)
 		}
 	}
@@ -101,11 +98,16 @@ func (tg *TaskGroup) Start() (err error) {
 	return
 }
 
-func (tg *TaskGroup) Schedule(task Task) (id int64, err error) {
+func (tg *TaskGroup) Schedule(call interface{}, args... interface{}) (id int64, err error) {
+	if !meta.IsFunction(call) {
+		err = fmt.Errorf("Task call must be a function.")
+	}
+
 	id = atomic.AddInt64(&tg.nextTaskId, 1)
 	newCtx := &TaskContext {
 		Id: id,
-		task: task,
+		call: call,
+		args: args,
 	}
 
 	if !tg.closed.Get().(bool) {
