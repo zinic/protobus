@@ -156,11 +156,7 @@ func (protobus *ProtoBus) Bind(source, sink string) (err error) {
 
 func (protobus *ProtoBus) Shutdown() {
 	log.Infof("Shutting down ProtoBus %s.", protobus.taskGroup.Config.Name)
-
-	protobus.taskGroup.Schedule(func() (err error) {
-		protobus.shutdown(DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
-		return
-	})
+	protobus.taskGroup.Schedule(protobus.shutdown, DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
 }
 
 func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
@@ -210,33 +206,43 @@ func (protobus *ProtoBus) RegisterTask(task interface{}) (handle Handle, err err
 	return
 }
 
-func (protobus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
-	ctx := &ProtoBusActorContext {
-		bus: protobus,
+func initActor(protobus *ProtoBus, actor Actor, ctx ActorContext) {
+	if err := actor.Init(ctx); err != nil {
+		log.Errorf("Actor %s failed to initialize: %v.", ctx.Name, err)
 	}
 
-	protobus.taskGroup.Schedule(func() (err error) {
-		if err := actor.Init(ctx); err != nil {
-			log.Errorf("Actor %s failed to initialize: %v.", name, err)
+	protobus.actorsContext(func() {
+		protobus.actors[ctx.Name()] = actor
+	})
+}
+
+func (protobus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
+	var alreadyRegistered bool
+
+	protobus.actorsContext(func() {
+		_, alreadyRegistered = protobus.actors[name]
+	})
+
+	if alreadyRegistered {
+		log.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
+	} else {
+		var ctx ActorContext = &ProtoBusActorContext {
+			name: name,
 		}
 
-		protobus.actorsContext(func() {
-			if _, found := protobus.actors[name]; !found {
-				protobus.actors[name] = actor
-			} else {
-				err = fmt.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
-			}
-		})
-
-		return
-	})
+		protobus.taskGroup.Schedule(initActor, protobus, actor, ctx)
+	}
 
 	return
 }
 
-func (protobus *ProtoBus) scan() (eventProcessed bool) {
-	eventProcessed = false
+func pull(source Source, sinks []string, protobus *ProtoBus) {
+	if reply := source.Pull(); reply != nil {
+		protobus.dispatch(reply, sinks)
+	}
+}
 
+func (protobus *ProtoBus) scan() () {
 	for source, sinks := range protobus.Bindings() {
 		sourceInst := protobus.Source(source)
 
@@ -244,13 +250,14 @@ func (protobus *ProtoBus) scan() (eventProcessed bool) {
 			continue
 		}
 
-		if sourceReply := sourceInst.Pull(); sourceReply != nil {
-			eventProcessed = true
-			protobus.dispatch(sourceReply, sinks)
-		}
+		protobus.taskGroup.Schedule(pull, sourceInst, sinks, protobus)
 	}
 
 	return
+}
+
+func push(sink Sink, event Event) {
+	sink.Push(event)
 }
 
 func (protobus *ProtoBus) dispatch(event Event, sinks []string) () {
@@ -261,9 +268,6 @@ func (protobus *ProtoBus) dispatch(event Event, sinks []string) () {
 			continue
 		}
 
-		protobus.taskGroup.Schedule(func() (err error) {
-			sinkInst.Push(event)
-			return
-		})
+		protobus.taskGroup.Schedule(push, sinkInst, event)
 	}
 }

@@ -1,7 +1,6 @@
 package zeromq
 
 import (
-	"fmt"
 	"syscall"
 	zmq "github.com/pebbe/zmq4"
 
@@ -13,99 +12,73 @@ import (
 
 type SocketContext struct {
 	socket *zmq.Socket
+	active concurrent.ReferenceLocker
 	workChannel chan []byte
 }
 
 type SocketManager struct {
 	sockets map[string]*SocketContext
-	activeSockets []string
 	socketsContext context.Context
 	socketWorkerGroup *concurrent.TaskGroup
 }
 
-func (sm *SocketManager) SetInactive(addr string) {
-	var idx int
-	for idx = 0; idx < len(sm.activeSockets); idx++ {
-		if sm.activeSockets[idx] == addr {
-			sm.activeSockets = append(sm.activeSockets[:idx], sm.activeSockets[idx+1:]...)
-			break
-		}
-	}
-}
+func (sm *SocketManager) socket(dst string) (ctx *SocketContext, err error) {
+	sm.socketsContext(func() {
+		ctx = sm.sockets[dst]
 
-func (sm *SocketManager) SetActive(addr string) {
-	sm.activeSockets = append(sm.activeSockets, addr)
-}
+		if ctx == nil {
+			var socket *zmq.Socket
 
-func (sm *SocketManager) Active(addr string) (active bool) {
-	active = false
-	for _, activeAddr := range sm.activeSockets {
-		if activeAddr == addr {
-			active = true
-			break
+			if socket, err = zmq.NewSocket(zmq.PUSH); err == nil {
+				if err = socket.Connect(dst); err == nil {
+					ctx = &SocketContext {
+						socket: socket,
+						active: concurrent.NewReferenceLocker(false),
+						workChannel: make(chan []byte, 1024),
+					}
+
+					sm.sockets[dst] = ctx
+				}
+			}
 		}
-	}
+	})
 
 	return
 }
 
-func (sm *SocketManager) send(socket *zmq.Socket, data []byte) (err error) {
-	for sent := 0; sent < len(data); {
-		if written, err := socket.SendBytes(data[sent:], 0); err == nil {
-			sent += written
-		} else {
-			log.Errorf("ZMQ send failed: %v", err)
-			break
-		}
+func send(ctx *SocketContext, tg *concurrent.TaskGroup) {
+	select {
+		case data := <- ctx.workChannel:
+			for sent := 0; sent < len(data); {
+				if written, err := ctx.socket.SendBytes(data[sent:], 0); err == nil {
+					sent += written
+				} else {
+					log.Errorf("ZMQ send failed: %v", err)
+					break
+				}
+			}
+
+			tg.Schedule(send, ctx, tg)
+
+		default:
+			ctx.active.Set(false)
 	}
 
 	return
 }
 
 func (sm *SocketManager) Send(dst string, data []byte) (err error) {
-	sm.socketsContext(func() {
-		socketCtx := sm.sockets[dst]
+	var socketCtx *SocketContext
 
-		if socketCtx == nil {
-			var socket *zmq.Socket
+	if socketCtx, err = sm.socket(dst); err == nil {
+		socketCtx.workChannel <- data
 
-			if socket, err = zmq.NewSocket(zmq.PUSH); err == nil {
-				if err = socket.Connect(dst); err == nil {
-					socketCtx = &SocketContext {
-						socket: socket,
-						workChannel: make(chan []byte, 4096),
-					}
-				}
-			}
+		if !socketCtx.active.Get().(bool) {
+			socketCtx.active.Set(true)
+
+			sm.socketWorkerGroup.Schedule(send, socketCtx, sm.socketWorkerGroup)
 		}
-
-		if socketCtx != nil {
-			socketCtx.workChannel <- data
-
-			if !sm.Active(dst) {
-				sm.SetActive(dst)
-
-				var socketSend func() (err error)
-				socketSend = func() (err error) {
-					select {
-						case event := <- socketCtx.workChannel:
-							sm.send(socketCtx.socket, event)
-							sm.socketWorkerGroup.Schedule(socketSend)
-
-						default:
-							sm.SetInactive(dst)
-					}
-
-					return
-				}
-
-				sm.socketWorkerGroup.Schedule(socketSend)
-			}
-		} else {	log.Infof("Sending %v %v", dst, data)
-
-			err = fmt.Errorf("No destination %s found.", dst)
-		}
-	})
+	}
 
 	return
 }

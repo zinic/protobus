@@ -15,8 +15,7 @@ type ActorHandle interface {
 }
 
 type ActorContext interface {
-	ActorId() (id int64)
-	Bus() (bus Bus)
+	Name() (name string)
 }
 
 type Actor interface {
@@ -80,16 +79,11 @@ func (sa *SimpleActor) Pull() (reply Event) {
 
 
 type ProtoBusActorContext struct {
-	id int64
-	bus Bus
+	name string
 }
 
-func (gbac *ProtoBusActorContext) Bus() (bus Bus) {
-	return gbac.bus
-}
-
-func (gbac *ProtoBusActorContext) ActorId() (id int64) {
-	return gbac.id
+func (gbac *ProtoBusActorContext) Name() (name string) {
+	return gbac.name
 }
 
 

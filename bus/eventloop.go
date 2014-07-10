@@ -3,12 +3,11 @@ package bus
 import (
 	"time"
 	"sync"
-	"runtime"
 
 	"github.com/zinic/protobus/concurrent"
 )
 
-func NewEventLoop(callTarget func() (yieldExecution bool)) (el *EventLoop) {
+func NewEventLoop(callTarget func()) (el *EventLoop) {
 	return &EventLoop {
 		waitGroup: &sync.WaitGroup{},
 		shutdown: concurrent.NewReferenceLocker(false),
@@ -20,7 +19,7 @@ func NewEventLoop(callTarget func() (yieldExecution bool)) (el *EventLoop) {
 type EventLoop struct {
 	waitGroup *sync.WaitGroup
 	shutdown concurrent.ReferenceLocker
-	callTarget func() (yieldExecution bool)
+	callTarget func()
 }
 
 func (evloop *EventLoop) Stop() {
@@ -33,11 +32,8 @@ func (evloop *EventLoop) Loop() (err error) {
 	evloop.waitGroup.Add(1)
 
 	for !evloop.shutdown.Get().(bool) {
-		if !evloop.callTarget() {
-			time.Sleep(50 * time.Millisecond)
-		} else {
-			runtime.Gosched()
-		}
+		evloop.callTarget()
+		time.Sleep(1 * time.Millisecond)
 	}
 
 	return
