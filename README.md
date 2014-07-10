@@ -1,5 +1,6 @@
 ## ProtoBus
-#### A persistant-actor model microservice bus written in Golang.
+
+ProtoBus is a persistant-actor model microservice bus written in Golang.
 
 ### Okay, what does it do?
 
