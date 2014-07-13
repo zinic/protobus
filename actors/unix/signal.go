@@ -32,6 +32,7 @@ func (uss *SignalSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (
 }
 
 func (uss *SignalSource) Stop() (err error) {
+	signal.Stop(uss.signalChannel)
 	close(uss.signalChannel)
 	return
 }

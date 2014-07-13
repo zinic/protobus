@@ -25,12 +25,12 @@ func main() {
 	injectorEvent := bus.NewEvent("testing::injector", eventPayload)
 
 	// Next we create the actual injector sources and then register them
-	mainBus.RegisterSource("testing::injector_a", testing.Injector(injectorEvent, 1 * time.Second))
-	mainBus.RegisterSource("testing::injector_b", testing.Injector(injectorEvent, 2 * time.Second))
-	mainBus.RegisterSource("testing::injector_c", testing.Injector(injectorEvent, 100 * time.Millisecond))
-	mainBus.RegisterSource("testing::injector_d", testing.Injector(injectorEvent, 500 * time.Millisecond))
-	mainBus.RegisterSource("testing::injector_e", testing.Injector(injectorEvent, 5 * time.Second))
-	mainBus.RegisterSource("testing::injector_f", testing.Injector(injectorEvent, 15 * time.Second))
+	mainBus.RegisterSource("testing::injector_a", testing.NewInjector(injectorEvent, 1 * time.Second))
+	mainBus.RegisterSource("testing::injector_b", testing.NewInjector(injectorEvent, 2 * time.Second))
+	mainBus.RegisterSource("testing::injector_c", testing.NewInjector(injectorEvent, 100 * time.Millisecond))
+	mainBus.RegisterSource("testing::injector_d", testing.NewInjector(injectorEvent, 500 * time.Millisecond))
+	mainBus.RegisterSource("testing::injector_e", testing.NewInjector(injectorEvent, 5 * time.Second))
+	mainBus.RegisterSource("testing::injector_f", testing.NewInjector(injectorEvent, 15 * time.Second))
 
 	// Register Unix signal handling for catching interrupts and shutting down. Using the
 	// SimpleSink function allows us to create a sink without having to have the additional

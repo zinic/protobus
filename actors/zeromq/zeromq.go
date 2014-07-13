@@ -2,6 +2,7 @@ package zeromq
 
 import (
 	"fmt"
+	"time"
 
 	zmq "github.com/pebbe/zmq4"
 
@@ -116,7 +117,7 @@ func (zmqs *ZMQSink) Init(actx bus.ActorContext) (err error) {
 
 func (zmqs *ZMQSink) Shutdown() (err error) {
 	zmqs.socketWorkerGroup.Stop()
-	zmqs.socketWorkerGroup.Join()
+	zmqs.socketWorkerGroup.Join(5 * time.Second)
 
 	zmqs.socketsContext(func() {
 		for _, sockCtx := range zmqs.sockets {

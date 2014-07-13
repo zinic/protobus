@@ -180,6 +180,10 @@ func NewLogger(name string) (log Logger) {
 
 
 // Nice root-level methods
+func Level() (rootLoggerLevel LogLevel) {
+	return rootLogger.Level()
+}
+
 func Debug(log string) {
 	rootLogger.Debugf(log)
 }

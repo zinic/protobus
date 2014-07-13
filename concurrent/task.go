@@ -2,83 +2,115 @@ package concurrent
 
 import (
 	"fmt"
-	"sync"
-	"sync/atomic"
-	"runtime/debug"
+	"time"
+	"runtime"
 
 	"github.com/zinic/protobus/log"
 	"github.com/zinic/protobus/meta"
 	"github.com/zinic/protobus/context"
 )
 
+type TrackedTask struct {
+	call interface{}
+	schedulerStack []byte
+}
+
 type TaskContext struct {
-	Id int64
-	status string
+	Id int
 	call interface{}
 	args []interface{}
-	editContext context.Context
-}
-
-func (tc *TaskContext) SetStatus(status string) {
-	tc.editContext(func() {
-		tc.status = status
-	})
-}
-
-func (tc *TaskContext) Status() (status string) {
-	return tc.status
 }
 
 func NewTaskGroup(config *TaskGroupConfig) (tg *TaskGroup) {
 	return &TaskGroup {
 		Config: config,
-		Tasks: make(chan *TaskContext, config.MaxQueuedTasks),
-
-		nextTaskId: 0,
-		closed: NewReferenceLocker(false),
-		waitGroup: &sync.WaitGroup{},
+		closed: false,
+		activeTasks: NewActivityTracker(config.MaxActiveWorkers),
+		taskChan: make(chan *TaskContext, config.MaxQueuedTasks),
 		editContext: NewLockerContext(),
 	}
 }
 
 type TaskGroupConfig struct {
 	Name string
-	MaxQueuedTasks int64
+	MaxQueuedTasks int
 	MaxActiveWorkers int
 }
 
 type TaskGroup struct {
 	Config *TaskGroupConfig
-	Tasks chan *TaskContext
 
-	closed ReferenceLocker
-	nextTaskId int64
-	waitGroup *sync.WaitGroup
+	closed bool
+	activeTasks Tracker
+	taskChan chan *TaskContext
 	editContext context.Context
 }
 
-func (tg *TaskGroup) Stop() {
-	tg.closed.Set(true)
-	close(tg.Tasks)
+func (tg *TaskGroup) Closed() (closed bool) {
+	tg.editContext(func() {
+		closed = tg.closed
+	})
+
+	return
 }
 
-func (tg *TaskGroup) worker() {
-	defer tg.waitGroup.Done()
+func (tg *TaskGroup) Stop() {
+	tg.editContext(func() {
+		if tg.closed {
+			reason := fmt.Sprintf("TaskGroup %s already closed", tg.Config.Name)
+			panic(reason)
+		}
 
-	for task := range tg.Tasks {
-		tg.dispatch(task)
+		tg.closed = true
+	})
+
+	close(tg.taskChan)
+}
+
+func (tg *TaskGroup) worker(id int) {
+	defer tg.activeTasks.CheckOut(id)
+
+	for !tg.Closed() {
+		if task, ok := <- tg.taskChan; ok {
+			go tg.dispatch(task)
+		} else {
+			break
+		}
+	}
+}
+
+func panicTaskGroupClosed(tgName string) {
+	reason := fmt.Sprintf("TaskGroup %s already closed", tgName)
+	panic(reason)
+}
+
+func cleanupDispatch(tg *TaskGroup, id int) {
+	tg.activeTasks.CheckOut(id)
+
+	if recovery := recover(); recovery != nil {
+		log.Errorf("Task %s caused a panic. Reason: %v", id, recovery)
+
+		if log.Level() == log.DEBUG {
+			stackTrace := make([]byte, 1024)
+
+			for {
+				if written := runtime.Stack(stackTrace, false); written < len(stackTrace) {
+					stackTrace = stackTrace[:written]
+					break
+				}
+
+				stackTrace = make([]byte, len(stackTrace)*2)
+			}
+
+			log.Errorf("Stacktrace of call: %s", stackTrace)
+		}
 	}
 }
 
 func (tg *TaskGroup) dispatch(taskCtx *TaskContext) {
-	defer func() {
-		if recovery := recover(); recovery != nil {
-			log.Errorf("Task %s caused a panic. Reason: %v\nStacktrace of call: %s\n",
-				taskCtx.Id, recovery, debug.Stack())
-		}
-	}()
+	defer cleanupDispatch(tg, taskCtx.Id)
 
-	if !tg.closed.Get().(bool) {
+	if !tg.Closed() {
 		if _, err := meta.Call(taskCtx.call, taskCtx.args); err != nil {
 			log.Infof("Error caught from task: %v", err)
 		}
@@ -86,43 +118,103 @@ func (tg *TaskGroup) dispatch(taskCtx *TaskContext) {
 }
 
 func (tg *TaskGroup) Start() (err error) {
-	if !tg.closed.Get().(bool) {
-		for wc := 0; wc < tg.Config.MaxActiveWorkers; wc++ {
-			tg.waitGroup.Add(1)
-			go tg.worker()
+	if tg.Closed() {
+		panicTaskGroupClosed(tg.Config.Name)
+	}
+
+	stackTrace := []byte("No stack trace recorded. Enable DEBUG.")
+
+	if log.Level() == log.DEBUG {
+		stackTrace = make([]byte, 1024)
+
+		for {
+			if written := runtime.Stack(stackTrace, false); written < len(stackTrace) {
+				stackTrace = stackTrace[:written]
+				break
+			}
+
+			stackTrace = make([]byte, len(stackTrace)*2)
 		}
-	} else {
-		err = fmt.Errorf("Failed to start TaskGroup: TaskGroup has been shutdown.")
+	}
+
+	id := tg.activeTasks.CheckIn(&TrackedTask {
+		call: tg.worker,
+		schedulerStack: stackTrace,
+	})
+
+	go tg.worker(id)
+
+	return
+}
+
+func (tg *TaskGroup) Schedule(call interface{}, args... interface{}) (id int, err error) {
+	switch {
+		case !meta.IsFunction(call):
+			err = fmt.Errorf("Task call must be a function.")
+
+		case tg.Closed():
+			panicTaskGroupClosed(tg.Config.Name)
+
+		default:
+			stackTrace := []byte("No stack trace recorded. Enable DEBUG.")
+
+			if log.Level() == log.DEBUG {
+				stackTrace = make([]byte, 1024)
+
+				for {
+					if written := runtime.Stack(stackTrace, false); written < len(stackTrace) {
+						stackTrace = stackTrace[:written]
+						break
+					}
+
+					stackTrace = make([]byte, len(stackTrace)*2)
+				}
+			}
+
+			// Generate the next task id and submit it
+			id = tg.activeTasks.CheckIn(&TrackedTask {
+				call: call,
+				schedulerStack: stackTrace,
+			})
+
+			tg.taskChan <- &TaskContext {
+				Id: id,
+				call: call,
+				args: args,
+			}
 	}
 
 	return
 }
 
-func (tg *TaskGroup) Schedule(call interface{}, args... interface{}) (id int64, err error) {
-	if !meta.IsFunction(call) {
-		err = fmt.Errorf("Task call must be a function.")
-	}
+func (tg *TaskGroup) Join(timeout time.Duration) {
+	var waitedNanos int64
+	waitForever := timeout == 0
 
-	id = atomic.AddInt64(&tg.nextTaskId, 1)
-	newCtx := &TaskContext {
-		Id: id,
-		call: call,
-		args: args,
-	}
+	for waitedNanos = 0; waitForever || waitedNanos < timeout.Nanoseconds(); {
+		then := time.Now()
 
-	if !tg.closed.Get().(bool) {
-		select {
-			case tg.Tasks <- newCtx:
-			default:
-				err = fmt.Errorf("Task channel full, please wait.")
+		done := false
+		tg.editContext(func() {
+			done = tg.activeTasks.NumActive() == 0
+		})
+
+		if done {
+			break
 		}
-	} else {
-		panic("Unable to schedule task: TaskGroup has been shutdown.")
+
+		time.Sleep(100 * time.Millisecond)
+		waitedNanos += time.Now().Sub(then).Nanoseconds()
 	}
 
-	return
-}
+	if !waitForever && waitedNanos >= timeout.Nanoseconds() {
+		errMsg := fmt.Sprintf("Giving up waiting for TaskGroup: %s to finish execution.\n\nTasks Remaining\n", tg.Config.Name)
 
-func (tg *TaskGroup) Join() {
-	tg.waitGroup.Wait()
+		for _, activeRef := range tg.activeTasks.Active() {
+			taskInfo := activeRef.(*TrackedTask)
+			errMsg += fmt.Sprintf("Task %T\n%s\n\n", taskInfo.call, taskInfo.schedulerStack)
+		}
+
+		log.Error(errMsg)
+	}
 }

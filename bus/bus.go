@@ -3,7 +3,6 @@ package bus
 import (
 	"fmt"
 	"time"
-	"runtime"
 
 	"github.com/zinic/protobus/log"
 	"github.com/zinic/protobus/context"
@@ -31,18 +30,6 @@ type Bus interface {
 	RegisterSource(name string, source Source) (ah ActorHandle, err error)
 	RegisterSink(name string, sink Sink) (ah ActorHandle, err error)
 }
-
-/*
-func shutdownActor(name string, actor Actor, shutdownChan chan int) {
-	log.Debugf("Shutting down actor: %s.", name)
-
-	if actor.Shutdown() == nil {
-		shutdownChan <- 0
-	} else {
-		shutdownChan <- 1
-	}
-}
-*/
 
 func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval time.Duration, completionChan chan int) (timeTaken time.Duration) {
 	timeTaken = 0
@@ -84,11 +71,11 @@ func NewProtoBus(name string) (bus Bus) {
 	tgConfig := &concurrent.TaskGroupConfig {
 		Name: fmt.Sprintf("%s-tg", name),
 		MaxQueuedTasks: DEFAULT_MAX_TASKS_QUEUED,
-		MaxActiveWorkers: runtime.NumCPU(),
+		MaxActiveWorkers: 1024,
 	}
 
 	protobus.taskGroup = concurrent.NewTaskGroup(tgConfig)
-	protobus.eventLoop = NewEventLoop(func(){})
+	protobus.eventLoop = NewEventLoop(protobus.scan)
 
 	return protobus
 }
@@ -159,8 +146,10 @@ func (protobus *ProtoBus) scan() {
 	for _, source := range protobus.bindingsCopy() {
 		select {
 			case event, open := <- source.incoming:
+
 				if open {
 					for sinkName, sink := range source.sinks {
+						log.Infof("Dispatching event %v --> sink %s", event, sinkName)
 						protobus.taskGroup.Schedule(func(event Event, sink Sink) {
 							if err := sink.Push(event); err != nil {
 								log.Errorf("Failed to push event to sink %s: %v.", sinkName, err)
@@ -208,47 +197,62 @@ func (protobus *ProtoBus) Shutdown() {
 	protobus.taskGroup.Schedule(protobus.shutdown, DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
 }
 
+
+func stopSource(name string, source Source, shutdownChan chan int) {
+	log.Debugf("Shutting down source: %s.", name)
+
+	if err := source.Stop(); err == nil {
+		shutdownChan <- 0
+	} else {
+		log.Errorf("Failed to stop source %s: %v", name, err)
+		shutdownChan <- 1
+	}
+}
+
+func shutdownSink(name string, sink Sink, shutdownChan chan int) {
+	log.Debugf("Shutting down sink: %s.", name)
+
+	if err := sink.Shutdown(); err == nil {
+		shutdownChan <- 0
+	} else {
+		log.Errorf("Failed to stop sink %s: %v", name, err)
+		shutdownChan <- 1
+	}
+}
+
 func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
-	// Wait for the evloop to exit
 	protobus.eventLoop.Stop()
 
-	/*
 	// ---
-	activeTasks := 0
-	shutdownChan := make(chan int, len(protobus.actors))
+	var (
+		activeTasks int
+		shutdownChan chan int
+	)
 
-	for source, _ := range protobus.bindings {
-		if actor, found := protobus.actors[source]; found {
-			activeTasks += 1
-			delete(protobus.actors, source)
+	activeTasks = 0
+	shutdownChan = make(chan int, len(protobus.sources))
 
-			log.Infof("Scheduling shutdown of: %s", source)
-			protobus.taskGroup.Schedule(shutdownActor, source, actor, shutdownChan)
-		}
+	for sourceName, registeredSource := range protobus.sources {
+		activeTasks += 1
+		protobus.taskGroup.Schedule(stopSource, sourceName, registeredSource.instance, shutdownChan)
 	}
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
 
 	activeTasks = 0
-	for _, sinks := range protobus.bindings {
-		for _, sink := range sinks {
-			if actor, found := protobus.actors[sink]; found {
-				activeTasks += 1
-				delete(protobus.actors, sink)
+	shutdownChan = make(chan int, len(protobus.sinks))
 
-				log.Infof("Scheduling shutdown of: %s", sink)
-				protobus.taskGroup.Schedule(shutdownActor, sink, actor, shutdownChan)
-			}
-		}
+	for sinkName, sink := range protobus.sinks {
+		activeTasks += 1
+		protobus.taskGroup.Schedule(shutdownSink, sinkName, sink, shutdownChan)
 	}
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
-	*/
 
 	protobus.taskGroup.Stop()
 	return
 }
 
 func (protobus *ProtoBus) Join() (err error) {
-	protobus.taskGroup.Join()
+	protobus.taskGroup.Join(15 * time.Second)
 	return
 }
 
@@ -288,10 +292,6 @@ func initSink(protobus *ProtoBus, sink Sink, ctx ActorContext) {
 	if err := sink.Init(ctx); err != nil {
 		log.Errorf("Sink %s failed to initialize: %v.", ctx.Name, err)
 	}
-
-	protobus.sinksCtx(func() {
-		protobus.sinks[ctx.Name()] = sink
-	})
 }
 
 func (protobus *ProtoBus) RegisterSink(name string, sink Sink) (ah ActorHandle, err error) {
@@ -302,7 +302,11 @@ func (protobus *ProtoBus) RegisterSink(name string, sink Sink) (ah ActorHandle, 
 			name: name,
 		}
 
-		protobus.taskGroup.Schedule(initSink, protobus, sink, ctx)
+		protobus.sinksCtx(func() {
+			protobus.sinks[ctx.Name()] = sink
+		})
+
+		protobus.taskGroup.Schedule(sink.Init, ctx)
 	}
 
 	return

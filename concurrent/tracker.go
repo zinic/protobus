@@ -4,41 +4,42 @@ import (
 	"github.com/zinic/protobus/context"
 )
 
-type State int
-
-const (
-	ACTIVE State = iota
-	INACTIVE State = iota
-)
-
-type Tracker interface {
-	Checkout() (id int)
-	State(id int) (state State)
-	Retire(id int)
+type TrackedReference struct {
+	reference interface{}
 }
 
-func NewTracker(maxActive int) (tracker Tracker) {
+type Tracker interface {
+	CheckIn(ref interface{}) (id int)
+	Active() (refs []interface{})
+	NumActive() (numActive int)
+	Lookup(id int) (ref interface{}, checkedIn bool)
+	CheckOut(id int)
+}
+
+func NewActivityTracker(maxActive int) (tracker Tracker) {
 	available := make(chan int, maxActive)
 	for id := 0; id < maxActive; id++ {
 		available <- id
 	}
 
-	return &StateTracker {
-		states: make([]State, maxActive),
+	return &ActivityTracker {
+		references: make([]*TrackedReference, maxActive),
+		numActive: 0,
 		available: available,
 		context: NewLockerContext(),
 	}
 }
 
-type StateTracker struct {
-	states []State
+type ActivityTracker struct {
+	references []*TrackedReference
+	numActive int
 	available chan int
 	context context.Context
 }
 
-func (t *StateTracker) grow() {
+func (t *ActivityTracker) grow() {
 	// Compute new length
-	size := len(t.states)
+	size := len(t.references)
 	growBy := size / 2
 	newSize := size + growBy
 
@@ -60,23 +61,29 @@ func (t *StateTracker) grow() {
 		available <- id
 	}
 
-	// Copy states
-	states := make([]State, newSize)
-	copy(states, t.states)
+	// Copy references
+	references := make([]*TrackedReference, newSize)
+	copy(references, t.references)
 
 	// Set references
 	t.available = available
-	t.states = states
+	t.references = references
 }
 
-func (t *StateTracker) Checkout() (id int) {
+func (t *ActivityTracker) CheckIn(reference interface{}) (id int) {
 	haveId := false
 
 	for !haveId {
 		select {
 			case id = <- t.available:
-				t.states[id] = ACTIVE
-				haveId = true
+				t.context(func() {
+					t.references[id] = &TrackedReference {
+						reference: reference,
+					}
+
+					t.numActive += 1
+					haveId = true
+				})
 
 			default:
 				t.context(t.grow)
@@ -86,13 +93,44 @@ func (t *StateTracker) Checkout() (id int) {
 	return
 }
 
-func (t *StateTracker) State(id int) (state State) {
-	return t.states[id]
+func (t *ActivityTracker) Active() (active []interface{}) {
+	active = make([]interface{}, 0)
+
+	t.context(func() {
+		for _, tracked := range t.references {
+			if tracked != nil {
+				active = append(active, tracked.reference)
+			}
+		}
+	})
+
+	return
 }
 
-func (t *StateTracker) Retire(id int) {
+func (t *ActivityTracker) NumActive() (numActive int) {
 	t.context(func() {
-		t.states[id] = INACTIVE
+		numActive = t.numActive
+	})
+
+	return
+}
+
+func (t *ActivityTracker) Lookup(id int) (reference interface{}, checkedIn bool) {
+	if tracked := t.references[id]; tracked != nil {
+		reference = tracked.reference
+		checkedIn = true
+	} else {
+		reference = nil
+		checkedIn = false
+	}
+
+	return
+}
+
+func (t *ActivityTracker) CheckOut(id int) {
+	t.context(func() {
+		t.numActive -= 1
+		t.references[id] = nil
 		t.available <- id
 	})
 }
