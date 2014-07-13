@@ -3,6 +3,7 @@ package zeromq
 import (
 	"fmt"
 	"time"
+	"syscall"
 
 	zmq "github.com/pebbe/zmq4"
 
@@ -161,6 +162,7 @@ func DefaultZMQSource() (source bus.Source) {
 
 func NewZMQSource(unmarshaller bus.MessageUnmarshaller) (source bus.Source) {
 	return &ZMQSource {
+		active: concurrent.NewReferenceLocker(false),
 		unmarshaller: unmarshaller,
 	}
 }
@@ -168,20 +170,34 @@ func NewZMQSource(unmarshaller bus.MessageUnmarshaller) (source bus.Source) {
 type ZMQSource struct {
 	received []byte
 	socket *zmq.Socket
+	active concurrent.ReferenceLocker
+
 	unmarshaller bus.MessageUnmarshaller
 }
 
 func (zmqs *ZMQSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
 	var socket *zmq.Socket
-	if socket, err = zmq.NewSocket(zmq.PULL); err != nil {
-		if err = socket.Bind("tcp://127.0.0.1:5555"); err != nil {
-			for {
-				if received, err := socket.Recv(0); err != nil {
-					log.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
+	zmqs.active.Set(true)
+
+	if socket, err = zmq.NewSocket(zmq.PULL); err == nil {
+		if err = socket.Bind("tcp://127.0.0.1:5555"); err == nil {
+			for zmqs.active.Get().(bool) {
+				if received, err := socket.Recv(zmq.DONTWAIT); err != nil {
+					if err == syscall.EAGAIN {
+						// Sleep for a second if there's nothing there
+						time.Sleep(1 * time.Millisecond)
+					} else {
+						log.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
+						break
+					}
 				} else 	{
-					var event bus.Event
+					var event struct {
+						Action interface{}
+						Payload bus.Message
+					}
+
 					if unmarshalled, err := zmqs.unmarshaller([]byte(received), &event); err != nil {
-						log.Debugf("Failed to unmarshal ZMQ message: %v", err)
+						log.Errorf("Failed to unmarshal ZMQ message: %v", err)
 					} else if unmarshalled {
 						outgoing <- bus.NewEvent(event.Action, event.Payload)
 					}
@@ -194,5 +210,6 @@ func (zmqs *ZMQSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (er
 }
 
 func (zmqs *ZMQSource) Stop() (err error) {
+	zmqs.active.Set(false)
 	return
 }

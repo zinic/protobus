@@ -99,5 +99,5 @@ func main() {
 
 	// Start the bus and wait for it to exit
 	mainBus.Start()
-	mainBus.Join()
+	mainBus.Wait()
 }

@@ -18,7 +18,7 @@ const (
 type Daemon interface {
 	Start() (err error)
 	Shutdown()
-	Join() (err error)
+	Wait() (err error)
 }
 
 type Bus interface {
@@ -149,7 +149,6 @@ func (protobus *ProtoBus) scan() {
 
 				if open {
 					for sinkName, sink := range source.sinks {
-						log.Infof("Dispatching event %v --> sink %s", event, sinkName)
 						protobus.taskGroup.Schedule(func(event Event, sink Sink) {
 							if err := sink.Push(event); err != nil {
 								log.Errorf("Failed to push event to sink %s: %v.", sinkName, err)
@@ -251,8 +250,8 @@ func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.
 	return
 }
 
-func (protobus *ProtoBus) Join() (err error) {
-	protobus.taskGroup.Join(15 * time.Second)
+func (protobus *ProtoBus) Wait() (err error) {
+	protobus.taskGroup.Wait()
 	return
 }
 

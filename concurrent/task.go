@@ -57,8 +57,7 @@ func (tg *TaskGroup) Closed() (closed bool) {
 func (tg *TaskGroup) Stop() {
 	tg.editContext(func() {
 		if tg.closed {
-			reason := fmt.Sprintf("TaskGroup %s already closed", tg.Config.Name)
-			panic(reason)
+			panicTaskGroupClosed(tg.Config.Name)
 		}
 
 		tg.closed = true
@@ -185,6 +184,18 @@ func (tg *TaskGroup) Schedule(call interface{}, args... interface{}) (id int, er
 	}
 
 	return
+}
+
+func (tg *TaskGroup) Wait() {
+	done := false
+
+	for !done {
+		tg.editContext(func() {
+			done = tg.activeTasks.NumActive() == 0
+		})
+
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (tg *TaskGroup) Join(timeout time.Duration) {
