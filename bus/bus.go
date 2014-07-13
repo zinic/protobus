@@ -28,9 +28,11 @@ type Bus interface {
 	Bind(source, sink string) (err error)
 
 	RegisterTask(task interface{}) (handle Handle, err error)
-	RegisterActor(name string, actor Actor) (ah ActorHandle, err error)
+	RegisterSource(name string, source Source) (ah ActorHandle, err error)
+	RegisterSink(name string, sink Sink) (ah ActorHandle, err error)
 }
 
+/*
 func shutdownActor(name string, actor Actor, shutdownChan chan int) {
 	log.Debugf("Shutting down actor: %s.", name)
 
@@ -40,6 +42,7 @@ func shutdownActor(name string, actor Actor, shutdownChan chan int) {
 		shutdownChan <- 1
 	}
 }
+*/
 
 func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval time.Duration, completionChan chan int) (timeTaken time.Duration) {
 	timeTaken = 0
@@ -67,11 +70,15 @@ func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval
 
 func NewProtoBus(name string) (bus Bus) {
 	protobus := &ProtoBus {
-		bindings: make(map[string][]string),
+		bindings: make(map[string]*BoundSource),
 		bindingsContext: concurrent.NewLockerContext(),
 
-		actors: make(map[string]Actor),
-		actorsContext: concurrent.NewLockerContext(),
+		sources: make(map[string]*RegisteredSource),
+		sourcesCtx: concurrent.NewLockerContext(),
+
+		sinks: make(map[string]Sink),
+		sinksCtx: concurrent.NewLockerContext(),
+
 	}
 
 	tgConfig := &concurrent.TaskGroupConfig {
@@ -81,22 +88,35 @@ func NewProtoBus(name string) (bus Bus) {
 	}
 
 	protobus.taskGroup = concurrent.NewTaskGroup(tgConfig)
-	protobus.eventLoop = NewEventLoop(protobus.scan)
+	protobus.eventLoop = NewEventLoop(func(){})
 
 	return protobus
 }
 
+type RegisteredSource struct {
+	instance Source
+	incoming chan Event
+}
+
+type BoundSource struct {
+	RegisteredSource
+
+	sinks map[string]Sink
+}
 
 // ===============
 type ProtoBus struct {
 	eventLoop *EventLoop
 	taskGroup *concurrent.TaskGroup
 
-	bindings map[string][]string
+	bindings map[string]*BoundSource
 	bindingsContext context.Context
 
-	actors map[string]Actor
-	actorsContext context.Context
+	sources map[string]*RegisteredSource
+	sourcesCtx context.Context
+
+	sinks map[string]Sink
+	sinksCtx context.Context
 }
 
 func (protobus *ProtoBus) Start() (err error) {
@@ -107,28 +127,24 @@ func (protobus *ProtoBus) Start() (err error) {
 	return
 }
 
-func (protobus *ProtoBus) Source(name string) (source Source) {
-	protobus.actorsContext(func() {
-		if actor, found := protobus.actors[name]; found {
-			source = actor.(Source)
-		}
+func (protobus *ProtoBus) source(name string) (source *RegisteredSource, found bool) {
+	protobus.sourcesCtx(func() {
+		source, found = protobus.sources[name]
 	})
 
 	return
 }
 
-func (protobus *ProtoBus) Sink(name string) (sink Sink) {
-	protobus.actorsContext(func () {
-		if actor, found := protobus.actors[name]; found {
-			sink = actor.(Sink)
-		}
+func (protobus *ProtoBus) sink(name string) (sink Sink, found bool) {
+	protobus.sinksCtx(func () {
+		sink, found = protobus.sinks[name]
 	})
 
 	return
 }
 
-func (protobus *ProtoBus) Bindings() (bindingsCopy map[string][]string) {
-	bindingsCopy = make(map[string][]string)
+func (protobus *ProtoBus) bindingsCopy() (bindingsCopy map[string]*BoundSource) {
+	bindingsCopy = make(map[string]*BoundSource)
 
 	protobus.bindingsContext(func() {
 		for k, v := range protobus.bindings {
@@ -139,17 +155,50 @@ func (protobus *ProtoBus) Bindings() (bindingsCopy map[string][]string) {
 	return
 }
 
-func (protobus *ProtoBus) Bind(source, sink string) (err error) {
-	protobus.bindingsContext(func() {
-		sinks := protobus.bindings[source]
+func (protobus *ProtoBus) scan() {
+	for _, source := range protobus.bindingsCopy() {
+		select {
+			case event, open := <- source.incoming:
+				if open {
+					for sinkName, sink := range source.sinks {
+						protobus.taskGroup.Schedule(func(event Event, sink Sink) {
+							if err := sink.Push(event); err != nil {
+								log.Errorf("Failed to push event to sink %s: %v.", sinkName, err)
+							}
+						}, event, sink)
+					}
+				} else {
+					// channel closed, source is done
+					log.Errorf("Reclaiming sources that have closed their channels has not been implemented yet.")
+				}
 
-		if sinks == nil {
-			sinks = make([]string, 0)
+			default:
 		}
+	}
+}
 
-		sinks = append(sinks, sink)
-		protobus.bindings[source] = sinks
-	})
+func (protobus *ProtoBus) Bind(sourceName, sinkName string) (err error) {
+	if source, found := protobus.source(sourceName); !found {
+		err = fmt.Errorf("Unable to bind %s --> %s. No source named %s found.", sourceName, sinkName, sourceName)
+	} else if sink, found := protobus.sink(sinkName); !found {
+		err = fmt.Errorf("Unable to bind %s --> %s. No sink named %s found.", sourceName, sinkName, sinkName)
+	} else {
+		protobus.bindingsContext(func() {
+			if boundSource, found := protobus.bindings[sourceName]; found {
+				boundSource.sinks[sinkName] = sink
+			} else {
+				boundSource = &BoundSource {
+					RegisteredSource: *source,
+
+					sinks: map[string]Sink {
+						sinkName: sink,
+					},
+				}
+
+				protobus.bindings[sourceName] = boundSource
+			}
+		})
+	}
 
 	return
 }
@@ -163,6 +212,7 @@ func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.
 	// Wait for the evloop to exit
 	protobus.eventLoop.Stop()
 
+	/*
 	// ---
 	activeTasks := 0
 	shutdownChan := make(chan int, len(protobus.actors))
@@ -191,6 +241,7 @@ func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.
 		}
 	}
 	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
+	*/
 
 	protobus.taskGroup.Stop()
 	return
@@ -206,68 +257,53 @@ func (protobus *ProtoBus) RegisterTask(task interface{}) (handle Handle, err err
 	return
 }
 
-func initActor(protobus *ProtoBus, actor Actor, ctx ActorContext) {
-	if err := actor.Init(ctx); err != nil {
-		log.Errorf("Actor %s failed to initialize: %v.", ctx.Name, err)
-	}
-
-	protobus.actorsContext(func() {
-		protobus.actors[ctx.Name()] = actor
-	})
-}
-
-func (protobus *ProtoBus) RegisterActor(name string, actor Actor) (ah ActorHandle, err error) {
-	var alreadyRegistered bool
-
-	protobus.actorsContext(func() {
-		_, alreadyRegistered = protobus.actors[name]
-	})
-
-	if alreadyRegistered {
-		log.Errorf("Failed to add actor %s. Reason: actor already registered.", name)
+func (protobus *ProtoBus) RegisterSource(name string, source Source) (ah ActorHandle, err error) {
+	if _, found := protobus.source(name); found {
+		err = fmt.Errorf("Failed to add source %s. Reason: source already registered.", name)
 	} else {
 		var ctx ActorContext = &ProtoBusActorContext {
 			name: name,
 		}
 
-		protobus.taskGroup.Schedule(initActor, protobus, actor, ctx)
+		incoming := make(chan Event)
+
+		protobus.sourcesCtx(func() {
+			protobus.sources[name] = &RegisteredSource {
+				instance: source,
+				incoming: incoming,
+			}
+		})
+
+		protobus.taskGroup.Schedule(func (incoming chan Event, ctx ActorContext) {
+			if err := source.Start(incoming, ctx); err != nil {
+				log.Errorf("Source %s failed to initialize: %v.", ctx.Name, err)
+			}
+		}, incoming, ctx)
 	}
 
 	return
 }
 
-func pull(source Source, sinks []string, protobus *ProtoBus) {
-	if reply := source.Pull(); reply != nil {
-		protobus.dispatch(reply, sinks)
+func initSink(protobus *ProtoBus, sink Sink, ctx ActorContext) {
+	if err := sink.Init(ctx); err != nil {
+		log.Errorf("Sink %s failed to initialize: %v.", ctx.Name, err)
 	}
+
+	protobus.sinksCtx(func() {
+		protobus.sinks[ctx.Name()] = sink
+	})
 }
 
-func (protobus *ProtoBus) scan() () {
-	for source, sinks := range protobus.Bindings() {
-		sourceInst := protobus.Source(source)
-
-		if sourceInst == nil {
-			continue
+func (protobus *ProtoBus) RegisterSink(name string, sink Sink) (ah ActorHandle, err error) {
+	if _, found := protobus.sink(name); found {
+		log.Errorf("Failed to add sink %s. Reason: sink already registered.", name)
+	} else {
+		var ctx ActorContext = &ProtoBusActorContext {
+			name: name,
 		}
 
-		protobus.taskGroup.Schedule(pull, sourceInst, sinks, protobus)
+		protobus.taskGroup.Schedule(initSink, protobus, sink, ctx)
 	}
 
 	return
-}
-
-func push(sink Sink, event Event) {
-	sink.Push(event)
-}
-
-func (protobus *ProtoBus) dispatch(event Event, sinks []string) () {
-	for _, sink := range sinks {
-		sinkInst := protobus.Sink(sink)
-
-		if sinkInst == nil {
-			continue
-		}
-
-		protobus.taskGroup.Schedule(push, sinkInst, event)
-	}
 }

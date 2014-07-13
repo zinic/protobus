@@ -1,7 +1,8 @@
 package zeromq
 
 import (
-	"syscall"
+	"fmt"
+
 	zmq "github.com/pebbe/zmq4"
 
 	"github.com/zinic/protobus/bus"
@@ -127,7 +128,7 @@ func (zmqs *ZMQSink) Shutdown() (err error) {
 	return
 }
 
-func (zmqs *ZMQSink) Push(event bus.Event) {
+func (zmqs *ZMQSink) Push(event bus.Event) (err error) {
 	payload := event.Payload()
 
 	if payload != nil {
@@ -140,16 +141,19 @@ func (zmqs *ZMQSink) Push(event bus.Event) {
 				Payload: message,
 			}
 
-			if data, err := zmqs.marshaller(output); err == nil {
+			var data []byte
+			if data, err = zmqs.marshaller(output); err == nil {
 				zmqs.Send(message.Destination, data)
 			} else {
-				log.Errorf("Failed to encode %v: %v", output, err)
+				err = fmt.Errorf("Failed to encode %v: %v", output, err)
 			}
 		}
 	}
+
+	return
 }
 
-func DefaultZMQGetSource() (source bus.Source) {
+func DefaultZMQSource() (source bus.Source) {
 	unmarshaller := &JSONMessageUnmarshaller{}
 	return NewZMQSource(unmarshaller.Unmarshall)
 }
@@ -161,42 +165,33 @@ func NewZMQSource(unmarshaller bus.MessageUnmarshaller) (source bus.Source) {
 }
 
 type ZMQSource struct {
+	received []byte
 	socket *zmq.Socket
 	unmarshaller bus.MessageUnmarshaller
 }
 
-func (zmqs *ZMQSource) Init(actx bus.ActorContext) (err error) {
-	if zmqs.socket, err = zmq.NewSocket(zmq.PULL); err == nil {
-		err = zmqs.socket.Bind("tcp://127.0.0.1:5555")
-	} else {
-		log.Errorf("Failed to init ZMQ PULL socket: %v", err)
+func (zmqs *ZMQSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
+	var socket *zmq.Socket
+	if socket, err = zmq.NewSocket(zmq.PULL); err != nil {
+		if err = socket.Bind("tcp://127.0.0.1:5555"); err != nil {
+			for {
+				if received, err := socket.Recv(0); err != nil {
+					log.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
+				} else 	{
+					var event bus.Event
+					if unmarshalled, err := zmqs.unmarshaller([]byte(received), &event); err != nil {
+						log.Debugf("Failed to unmarshal ZMQ message: %v", err)
+					} else if unmarshalled {
+						outgoing <- bus.NewEvent(event.Action, event.Payload)
+					}
+				}
+			}
+		}
 	}
 
 	return
 }
 
-func (zmqs *ZMQSource) Shutdown() (err error) {
-	zmqs.socket.Close()
-	return
-}
-
-func (zmqs *ZMQSource) Pull() (reply bus.Event) {
-	if recvStr, err := zmqs.socket.Recv(zmq.DONTWAIT); err != nil {
-		if err != syscall.EAGAIN {
-			log.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
-		}
-	} else {
-		var event struct {
-			Action interface{}
-			Payload *bus.Message
-		}
-
-		if unmarshalled, err := zmqs.unmarshaller([]byte(recvStr), &event); err == nil && unmarshalled {
-			reply = bus.NewEvent(event.Action, event.Payload)
-		} else if err != nil {
-			log.Debugf("Failed to unmarshal ZMQ message: %v", err)
-		}
-	}
-
+func (zmqs *ZMQSource) Stop() (err error) {
 	return
 }

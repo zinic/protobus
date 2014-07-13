@@ -18,65 +18,65 @@ type ActorContext interface {
 	Name() (name string)
 }
 
-type Actor interface {
-	Init(actx ActorContext) (err error)
-	Shutdown() (err error)
-}
-
 type Source interface {
-	Actor
-	Pull() (reply Event)
+	Start(outgoing chan Event, ctx ActorContext) (err error)
+	Stop() (err error)
 }
 
 type Sink interface {
-	Actor
-	Push(event Event)
+	Init(ctx ActorContext) (err error)
+	Shutdown() (err error)
+
+	Push(event Event) (err error)
 }
 
-func SimpleSource(pull func() (event Event)) (source Source) {
-	return &SimpleActor {
-		pull: pull,
+func NewSimpleSource(start func(outgoing chan Event, actx ActorContext) (err error)) (source Source) {
+	return &SimpleSource {
+		start: start,
 	}
 }
 
-func SimpleSink(push func(event Event)) (source Source) {
-	return &SimpleActor {
+func NewSimpleSink(push func(event Event) (err error)) (sink Sink) {
+	return &SimpleSink {
 		push: push,
 	}
 }
 
 // Implementation
-type SimpleActor struct {
-	pull func() (event Event)
-	push func(event Event)
+type SimpleSource struct {
+	start func(outgoing chan Event, actx ActorContext) (err error)
 }
 
-func (sa *SimpleActor) Init(actx ActorContext) (err error) {
+func (sa *SimpleSource) Start(outgoing chan Event, actx ActorContext) (err error) {
+	return sa.start(outgoing, actx)
+}
+
+func (sa *SimpleSource) Stop() (err error) {
 	return
 }
 
-func (sa *SimpleActor) Shutdown() (err error) {
+
+type SimpleSink struct {
+	push func(event Event) (err error)
+}
+
+func (sa *SimpleSink) Init(actx ActorContext) (err error) {
 	return
 }
 
-func (sa *SimpleActor) Push(event Event) {
+func (sa *SimpleSink) Shutdown() (err error) {
+	return
+}
+
+func (sa *SimpleSink) Push(event Event) (err error) {
 	if sa.push != nil {
-		sa.push(event)
+		err = sa.push(event)
 	} else {
-		log.Warning("Push called on a SimpleActor that has no push method set. Check your bindings.")
-	}
-}
-
-func (sa *SimpleActor) Pull() (reply Event) {
-	if sa.pull != nil {
-		reply = sa.pull()
-	} else {
-		log.Warning("Pull called on a SimpleActor that has no pull method set. Check your bindings.")
+		log.Warning("Push called on a SimpleSink that has no push method set. Check your bindings.")
 	}
 
 	return
 }
-
 
 type ProtoBusActorContext struct {
 	name string

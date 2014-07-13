@@ -7,15 +7,10 @@ import (
 )
 
 func Injector(event bus.Event, injectionInterval time.Duration) (source bus.Source) {
-	lastInjection := time.Now()
-
-	return bus.SimpleSource(func() (reply bus.Event) {
-		now := time.Now()
-		difference := now.Sub(lastInjection)
-
-		if difference.Nanoseconds() > injectionInterval.Nanoseconds() {
-			lastInjection = now
-			reply = event
+	return bus.NewSimpleSource(func(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
+		for {
+			outgoing <- event
+			time.Sleep(injectionInterval)
 		}
 
 		return

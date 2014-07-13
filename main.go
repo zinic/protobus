@@ -17,25 +17,25 @@ func main() {
 	mainBus := bus.NewProtoBus("main")
 
 	// Register our ZeroMQ source and sink. Binding to either allows for remote communication.
-	mainBus.RegisterActor("zeromq::sender", zeromq.DefaultZMQSink())
-	mainBus.RegisterActor("zeromq::server", zeromq.DefaultZMQGetSource())
+	mainBus.RegisterSink("zeromq::sender", zeromq.DefaultZMQSink())
+	mainBus.RegisterSource("zeromq::server", zeromq.DefaultZMQSource())
 
 	// A testing source that injects events every second. First we create the event we want to inject
 	eventPayload := &bus.Message {Destination: "tcp://127.0.0.1:5555", Contents: "testing"}
 	injectorEvent := bus.NewEvent("testing::injector", eventPayload)
 
 	// Next we create the actual injector sources and then register them
-	mainBus.RegisterActor("testing::injector_a", testing.Injector(injectorEvent, 1 * time.Second))
-	mainBus.RegisterActor("testing::injector_b", testing.Injector(injectorEvent, 2 * time.Second))
-	mainBus.RegisterActor("testing::injector_c", testing.Injector(injectorEvent, 100 * time.Millisecond))
-	mainBus.RegisterActor("testing::injector_d", testing.Injector(injectorEvent, 500 * time.Millisecond))
-	mainBus.RegisterActor("testing::injector_e", testing.Injector(injectorEvent, 5 * time.Second))
-	mainBus.RegisterActor("testing::injector_f", testing.Injector(injectorEvent, 15 * time.Second))
+	mainBus.RegisterSource("testing::injector_a", testing.Injector(injectorEvent, 1 * time.Second))
+	mainBus.RegisterSource("testing::injector_b", testing.Injector(injectorEvent, 2 * time.Second))
+	mainBus.RegisterSource("testing::injector_c", testing.Injector(injectorEvent, 100 * time.Millisecond))
+	mainBus.RegisterSource("testing::injector_d", testing.Injector(injectorEvent, 500 * time.Millisecond))
+	mainBus.RegisterSource("testing::injector_e", testing.Injector(injectorEvent, 5 * time.Second))
+	mainBus.RegisterSource("testing::injector_f", testing.Injector(injectorEvent, 15 * time.Second))
 
 	// Register Unix signal handling for catching interrupts and shutting down. Using the
 	// SimpleSink function allows us to create a sink without having to have the additional
 	// fanfare methods specified such as Init and Shutdown.
-	mainSignalSink := bus.SimpleSink(func(event bus.Event) {
+	mainSignalSink := bus.NewSimpleSink(func(event bus.Event) (err error) {
 		payload := event.Payload()
 		if sig, typeOk := payload.(os.Signal); typeOk {
 			switch sig {
@@ -46,16 +46,19 @@ func main() {
 					mainBus.Shutdown()
 			}
 		}
+
+		return
 	})
 
-	mainBus.RegisterActor("unix::signal_source", &unix.SignalSource{})
-	mainBus.RegisterActor("main::signal_sink", mainSignalSink)
+	mainBus.RegisterSource("unix::signal_source", &unix.SignalSource{})
+	mainBus.RegisterSink("main::signal_sink", mainSignalSink)
 
 	// Register a debug sink for printing out messages caught
-	mainDebugSink := bus.SimpleSink(func(event bus.Event) {
+	mainDebugSink := bus.NewSimpleSink(func(event bus.Event) (err error) {
 		log.Infof("Caught event %v", event)
+		return
 	})
-	mainBus.RegisterActor("main::debug", mainDebugSink)
+	mainBus.RegisterSink("main::debug", mainDebugSink)
 
 	// Create our bus bindings
 	bindings := map[string][]string {

@@ -14,27 +14,24 @@ type SignalSource struct {
 	signalChannel chan os.Signal
 }
 
-func (uss *SignalSource) Init(actx bus.ActorContext) (err error) {
+func (uss *SignalSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
 	log.Debug("Initializing SignalSource.")
 
 	uss.signalChannel = make(chan os.Signal, 1)
 	signal.Notify(uss.signalChannel, os.Interrupt, syscall.SIGTERM)
-	return
-}
 
-func (uss *SignalSource) Shutdown() (err error) {
-	close(uss.signalChannel)
-	return
-}
-
-func (uss *SignalSource) Pull() (reply bus.Event) {
-	select {
-		case sig := <- uss.signalChannel:
-			if sig != nil {
-				reply = bus.NewEvent("signal", sig)
-			}
-
-		default:
+	for {
+		if sig, ok := <- uss.signalChannel; ok {
+			outgoing <- bus.NewEvent("unix::signal", sig)
+		} else {
+			break
+		}
 	}
+
+	return
+}
+
+func (uss *SignalSource) Stop() (err error) {
+	close(uss.signalChannel)
 	return
 }
