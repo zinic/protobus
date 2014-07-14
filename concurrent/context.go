@@ -6,8 +6,7 @@ import (
 	"github.com/zinic/protobus/context"
 )
 
-func NewLockerContext() (lockerContext context.Context) {
-	mutex := &sync.Mutex{}
+func NewMutexContext(mutex *sync.Mutex) (mutexContet context.Context) {
 	lockContextProvider := func(call context.ContextBound, args... interface{}) (err error) {
 		mutex.Lock()
 		defer mutex.Unlock()
@@ -16,4 +15,8 @@ func NewLockerContext() (lockerContext context.Context) {
 	}
 
 	return context.Using(lockContextProvider)
+}
+
+func NewLockerContext() (lockerContext context.Context) {
+	return NewMutexContext(&sync.Mutex{})
 }

@@ -31,30 +31,6 @@ type Bus interface {
 	RegisterSink(name string, sink Sink) (ah ActorHandle, err error)
 }
 
-func waitForCompletion(taskCount int, timeRemaining time.Duration, checkInterval time.Duration, completionChan chan int) (timeTaken time.Duration) {
-	timeTaken = 0
-
-	for taskCount > 0 {
-		then := time.Now()
-
-		select {
-		case <- completionChan:
-			taskCount -= 1
-
-		default:
-			time.Sleep(checkInterval)
-			timeTaken += time.Now().Sub(then)
-
-			if timeTaken >= timeRemaining {
-				log.Error("Timed out waiting for tasks to finish. Moving on.")
-				taskCount = 0
-			}
-		}
-	}
-
-	return
-}
-
 func NewProtoBus(name string) (bus Bus) {
 	protobus := &ProtoBus {
 		bindings: make(map[string]*BoundSource),
@@ -193,65 +169,57 @@ func (protobus *ProtoBus) Bind(sourceName, sinkName string) (err error) {
 
 func (protobus *ProtoBus) Shutdown() {
 	log.Infof("Shutting down ProtoBus %s.", protobus.taskGroup.Config.Name)
-	protobus.taskGroup.Schedule(protobus.shutdown, DEFAULT_SHUTDOWN_WAIT_DURATION, SHUTDOWN_POLL_INTERVAL)
-}
 
-
-func stopSource(name string, source Source, shutdownChan chan int) {
-	log.Debugf("Shutting down source: %s.", name)
-
-	if err := source.Stop(); err == nil {
-		shutdownChan <- 0
-	} else {
-		log.Errorf("Failed to stop source %s: %v", name, err)
-		shutdownChan <- 1
-	}
-}
-
-func shutdownSink(name string, sink Sink, shutdownChan chan int) {
-	log.Debugf("Shutting down sink: %s.", name)
-
-	if err := sink.Shutdown(); err == nil {
-		shutdownChan <- 0
-	} else {
-		log.Errorf("Failed to stop sink %s: %v", name, err)
-		shutdownChan <- 1
-	}
-}
-
-func (protobus *ProtoBus) shutdown(waitPeriod time.Duration, checkInterval time.Duration) (err error) {
 	protobus.eventLoop.Stop()
 
-	// ---
-	var (
-		activeTasks int
-		shutdownChan chan int
-	)
+	sdgConfig := &concurrent.TaskGroupConfig {
+		Name: fmt.Sprintf("%s-shutdown-tg", protobus.taskGroup.Config.Name),
+		MaxQueuedTasks: DEFAULT_MAX_TASKS_QUEUED,
+		MaxActiveWorkers: 1024,
+	}
 
-	activeTasks = 0
-	shutdownChan = make(chan int, len(protobus.sources))
+	sourceGroup := concurrent.NewTaskGroup(sdgConfig)
+	sourceGroup.Start()
 
 	for sourceName, registeredSource := range protobus.sources {
-		activeTasks += 1
-		protobus.taskGroup.Schedule(stopSource, sourceName, registeredSource.instance, shutdownChan)
+		sourceGroup.Schedule(stopSource, sourceName, registeredSource.instance)
 	}
-	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
+	sourceGroup.Join(4 * time.Second)
+	sourceGroup.Stop()
 
-	activeTasks = 0
-	shutdownChan = make(chan int, len(protobus.sinks))
+
+	sinkGroup := concurrent.NewTaskGroup(sdgConfig)
+	sinkGroup.Start()
 
 	for sinkName, sink := range protobus.sinks {
-		activeTasks += 1
-		protobus.taskGroup.Schedule(shutdownSink, sinkName, sink, shutdownChan)
+		sinkGroup.Schedule(shutdownSink, sinkName, sink)
 	}
-	waitForCompletion(activeTasks, waitPeriod, checkInterval, shutdownChan)
+	sinkGroup.Join(4 * time.Second)
+	sinkGroup.Stop()
 
 	protobus.taskGroup.Stop()
 	return
 }
 
+
+func stopSource(name string, source Source) {
+	log.Debugf("Shutting down source: %s.", name)
+
+	if err := source.Stop(); err != nil {
+		log.Errorf("Failed to stop source %s: %v", name, err)
+	}
+}
+
+func shutdownSink(name string, sink Sink) {
+	log.Debugf("Shutting down sinks: %s.", name)
+
+	if err := sink.Shutdown(); err != nil {
+		log.Errorf("Failed to shutdown sink %s: %v", name, err)
+	}
+}
+
 func (protobus *ProtoBus) Wait() (err error) {
-	protobus.taskGroup.Wait()
+	protobus.taskGroup.Join(0)
 	return
 }
 
