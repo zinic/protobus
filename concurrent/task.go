@@ -183,7 +183,8 @@ func (tg *TaskGroup) Join(timeout time.Duration) (err error) {
 
 		done := false
 		tg.lockCtx(func() {
-			done = tg.taskTracker.NumActive() == 0
+			active := tg.taskTracker.NumActive()
+			done = active == 0
 		})
 
 		if done {

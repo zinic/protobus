@@ -14,7 +14,7 @@ type SignalSource struct {
 	signalChannel chan os.Signal
 }
 
-func (uss *SignalSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
+func (uss *SignalSource) Start(outgoing chan<- bus.Event, actx bus.ActorContext) (err error) {
 	log.Debug("Initializing SignalSource.")
 
 	uss.signalChannel = make(chan os.Signal, 1)

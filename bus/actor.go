@@ -1,9 +1,5 @@
 package bus
 
-import (
-	"github.com/zinic/protobus/log"
-)
-
 // Interfaces
 type Handle interface {
 	Id() (id int64)
@@ -18,36 +14,38 @@ type ActorContext interface {
 	Name() (name string)
 }
 
-type Source interface {
-	Start(outgoing chan Event, ctx ActorContext) (err error)
+type Actor interface {
 	Stop() (err error)
 }
 
-type Sink interface {
-	Init(ctx ActorContext) (err error)
-	Shutdown() (err error)
-
-	Push(event Event) (err error)
+type Source interface {
+	Actor
+	Start(outgoing chan<- Event, ctx ActorContext) (err error)
 }
 
-func NewSimpleSource(start func(outgoing chan Event, actx ActorContext) (err error)) (source Source) {
+type Sink interface {
+	Actor
+	Start(incoming <-chan Event, ctx ActorContext) (err error)
+}
+
+func NewSimpleSource(start func(outgoing chan<- Event, actx ActorContext) (err error)) (source Source) {
 	return &SimpleSource {
 		start: start,
 	}
 }
 
-func NewSimpleSink(push func(event Event) (err error)) (sink Sink) {
+func NewSimpleSink(start func(incoming <-chan Event, actx ActorContext) (err error)) (sink Sink) {
 	return &SimpleSink {
-		push: push,
+		start: start,
 	}
 }
 
 // Implementation
 type SimpleSource struct {
-	start func(outgoing chan Event, actx ActorContext) (err error)
+	start func(incoming chan<- Event, actx ActorContext) (err error)
 }
 
-func (sa *SimpleSource) Start(outgoing chan Event, actx ActorContext) (err error) {
+func (sa *SimpleSource) Start(outgoing chan<- Event, actx ActorContext) (err error) {
 	return sa.start(outgoing, actx)
 }
 
@@ -55,29 +53,19 @@ func (sa *SimpleSource) Stop() (err error) {
 	return
 }
 
-
 type SimpleSink struct {
-	push func(event Event) (err error)
+	start func(incoming <-chan Event, actx ActorContext) (err error)
 }
 
-func (sa *SimpleSink) Init(actx ActorContext) (err error) {
+func (sa *SimpleSink) Start(incoming <-chan Event, actx ActorContext) (err error) {
+	return sa.start(incoming, actx)
+}
+
+func (sa *SimpleSink) Stop() (err error) {
 	return
 }
 
-func (sa *SimpleSink) Shutdown() (err error) {
-	return
-}
-
-func (sa *SimpleSink) Push(event Event) (err error) {
-	if sa.push != nil {
-		err = sa.push(event)
-	} else {
-		log.Warning("Push called on a SimpleSink that has no push method set. Check your bindings.")
-	}
-
-	return
-}
-
+// Ctx crap
 type ProtoBusActorContext struct {
 	name string
 }

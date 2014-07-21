@@ -27,8 +27,8 @@ type Bus interface {
 	Bind(source, sink string) (err error)
 
 	RegisterTask(task interface{}) (handle Handle, err error)
-	RegisterSource(name string, source Source) (ah ActorHandle, err error)
-	RegisterSink(name string, sink Sink) (ah ActorHandle, err error)
+	RegisterSource(name string, actor Actor) (ah ActorHandle, err error)
+	RegisterSink(name string, actor Actor) (ah ActorHandle, err error)
 }
 
 func NewProtoBus(name string) (bus Bus) {
@@ -39,7 +39,7 @@ func NewProtoBus(name string) (bus Bus) {
 		sources: make(map[string]*RegisteredSource),
 		sourcesCtx: concurrent.NewLockerContext(),
 
-		sinks: make(map[string]Sink),
+		sinks: make(map[string]*RegisteredSink),
 		sinksCtx: concurrent.NewLockerContext(),
 
 	}
@@ -61,10 +61,14 @@ type RegisteredSource struct {
 	incoming chan Event
 }
 
+type RegisteredSink struct {
+	instance Sink
+	outgoing chan Event
+}
+
 type BoundSource struct {
 	RegisteredSource
-
-	sinks map[string]Sink
+	sinks map[string]*RegisteredSink
 }
 
 // ===============
@@ -78,7 +82,7 @@ type ProtoBus struct {
 	sources map[string]*RegisteredSource
 	sourcesCtx context.Context
 
-	sinks map[string]Sink
+	sinks map[string]*RegisteredSink
 	sinksCtx context.Context
 }
 
@@ -98,7 +102,7 @@ func (protobus *ProtoBus) source(name string) (source *RegisteredSource, found b
 	return
 }
 
-func (protobus *ProtoBus) sink(name string) (sink Sink, found bool) {
+func (protobus *ProtoBus) sink(name string) (sink *RegisteredSink, found bool) {
 	protobus.sinksCtx(func () {
 		sink, found = protobus.sinks[name]
 	})
@@ -124,12 +128,10 @@ func (protobus *ProtoBus) scan() {
 			case event, open := <- source.incoming:
 
 				if open {
-					for sinkName, sink := range source.sinks {
-						protobus.taskGroup.Schedule(func(event Event, sink Sink) {
-							if err := sink.Push(event); err != nil {
-								log.Errorf("Failed to push event to sink %s: %v.", sinkName, err)
-							}
-						}, event, sink)
+					for _, sink := range source.sinks {
+						protobus.taskGroup.Schedule(func(event Event, outgoing chan Event) {
+							outgoing <- event
+						}, event, sink.outgoing)
 					}
 				} else {
 					// channel closed, source is done
@@ -154,7 +156,7 @@ func (protobus *ProtoBus) Bind(sourceName, sinkName string) (err error) {
 				boundSource = &BoundSource {
 					RegisteredSource: *source,
 
-					sinks: map[string]Sink {
+					sinks: map[string]*RegisteredSink {
 						sinkName: sink,
 					},
 				}
@@ -182,7 +184,7 @@ func (protobus *ProtoBus) Shutdown() {
 	sourceGroup.Start()
 
 	for sourceName, registeredSource := range protobus.sources {
-		sourceGroup.Schedule(stopSource, sourceName, registeredSource.instance)
+		sourceGroup.Schedule(stopSource, sourceName, registeredSource)
 	}
 	sourceGroup.Join(4 * time.Second)
 	sourceGroup.Stop()
@@ -191,8 +193,8 @@ func (protobus *ProtoBus) Shutdown() {
 	sinkGroup := concurrent.NewTaskGroup(sdgConfig)
 	sinkGroup.Start()
 
-	for sinkName, sink := range protobus.sinks {
-		sinkGroup.Schedule(shutdownSink, sinkName, sink)
+	for sinkName, registeredSink := range protobus.sinks {
+		sinkGroup.Schedule(stopSink, sinkName, registeredSink)
 	}
 	sinkGroup.Join(4 * time.Second)
 	sinkGroup.Stop()
@@ -202,19 +204,21 @@ func (protobus *ProtoBus) Shutdown() {
 }
 
 
-func stopSource(name string, source Source) {
+func stopSource(name string, source *RegisteredSource) {
 	log.Debugf("Shutting down source: %s.", name)
+	defer close(source.incoming)
 
-	if err := source.Stop(); err != nil {
+	if err := source.instance.Stop(); err != nil {
 		log.Errorf("Failed to stop source %s: %v", name, err)
 	}
 }
 
-func shutdownSink(name string, sink Sink) {
-	log.Debugf("Shutting down sinks: %s.", name)
+func stopSink(name string, sink *RegisteredSink) {
+	log.Debugf("Shutting down sink: %s.", name)
+	close(sink.outgoing)
 
-	if err := sink.Shutdown(); err != nil {
-		log.Errorf("Failed to shutdown sink %s: %v", name, err)
+	if err := sink.instance.Stop(); err != nil {
+		log.Errorf("Failed to stop sink %s: %v", name, err)
 	}
 }
 
@@ -228,8 +232,10 @@ func (protobus *ProtoBus) RegisterTask(task interface{}) (handle Handle, err err
 	return
 }
 
-func (protobus *ProtoBus) RegisterSource(name string, source Source) (ah ActorHandle, err error) {
-	if _, found := protobus.source(name); found {
+func (protobus *ProtoBus) RegisterSource(name string, actor Actor) (ah ActorHandle, err error) {
+	if source, typeOk := actor.(Source); !typeOk {
+		err = fmt.Errorf("Failed to add source %s. Reason: actor passed to method does not answer to the Source interface.", name)
+	} else  if _, found := protobus.source(name); found {
 		err = fmt.Errorf("Failed to add source %s. Reason: source already registered.", name)
 	} else {
 		var ctx ActorContext = &ProtoBusActorContext {
@@ -255,25 +261,30 @@ func (protobus *ProtoBus) RegisterSource(name string, source Source) (ah ActorHa
 	return
 }
 
-func initSink(protobus *ProtoBus, sink Sink, ctx ActorContext) {
-	if err := sink.Init(ctx); err != nil {
-		log.Errorf("Sink %s failed to initialize: %v.", ctx.Name, err)
-	}
-}
-
-func (protobus *ProtoBus) RegisterSink(name string, sink Sink) (ah ActorHandle, err error) {
-	if _, found := protobus.sink(name); found {
+func (protobus *ProtoBus) RegisterSink(name string, actor Actor) (ah ActorHandle, err error) {
+	if sink, typeOk := actor.(Sink); !typeOk {
+		err = fmt.Errorf("Failed to add sink %s. Reason: actor passed to method does not answer to the Sink interface.", name)
+	} else if _, found := protobus.sink(name); found {
 		log.Errorf("Failed to add sink %s. Reason: sink already registered.", name)
 	} else {
 		var ctx ActorContext = &ProtoBusActorContext {
 			name: name,
 		}
 
+		outgoing := make(chan Event)
+
 		protobus.sinksCtx(func() {
-			protobus.sinks[ctx.Name()] = sink
+			protobus.sinks[ctx.Name()] = &RegisteredSink {
+				instance: sink,
+				outgoing: outgoing,
+			}
 		})
 
-		protobus.taskGroup.Schedule(sink.Init, ctx)
+		protobus.taskGroup.Schedule(func (outgoing chan Event, ctx ActorContext) {
+			if err := sink.Start(outgoing, ctx); err != nil {
+				log.Errorf("Sink %s failed to initialize: %v.", ctx.Name, err)
+			}
+		}, outgoing, ctx)
 	}
 
 	return

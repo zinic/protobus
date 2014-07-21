@@ -92,7 +92,7 @@ func DefaultZMQSink() (sink bus.Sink) {
 
 func NewZMQSink(marshaller bus.MessageMarshaller) (sink bus.Sink) {
 	return &ZMQSink {
-		SocketManager {
+		SocketManager: SocketManager {
 			sockets: make(map[string]*SocketContext),
 			socketsContext: concurrent.NewLockerContext(),
 			socketWorkerGroup: concurrent.NewTaskGroup(&concurrent.TaskGroupConfig {
@@ -101,7 +101,7 @@ func NewZMQSink(marshaller bus.MessageMarshaller) (sink bus.Sink) {
 				MaxActiveWorkers: 4,
 			}),
 		},
-		marshaller,
+		marshaller: marshaller,
 	}
 }
 
@@ -110,13 +110,20 @@ type ZMQSink struct {
 	marshaller bus.MessageMarshaller
 }
 
-func (zmqs *ZMQSink) Init(actx bus.ActorContext) (err error) {
+func (zmqs *ZMQSink) Start(incoming <-chan bus.Event, actx bus.ActorContext) (err error) {
 	zmqs.socketWorkerGroup.Start()
 
+	for {
+		if event, ok := <- incoming; ok {
+			zmqs.push(event)
+		} else {
+			break
+		}
+	}
 	return
 }
 
-func (zmqs *ZMQSink) Shutdown() (err error) {
+func (zmqs *ZMQSink) Stop() (err error) {
 	zmqs.socketWorkerGroup.Stop()
 	zmqs.socketWorkerGroup.Join(5 * time.Second)
 
@@ -130,7 +137,7 @@ func (zmqs *ZMQSink) Shutdown() (err error) {
 	return
 }
 
-func (zmqs *ZMQSink) Push(event bus.Event) (err error) {
+func (zmqs *ZMQSink) push(event bus.Event) (err error) {
 	payload := event.Payload()
 
 	if payload != nil {
@@ -155,54 +162,68 @@ func (zmqs *ZMQSink) Push(event bus.Event) (err error) {
 	return
 }
 
-func DefaultZMQSource() (source bus.Source) {
+func DefaultZMQSource(bindAddr string) (source bus.Source) {
 	unmarshaller := &JSONMessageUnmarshaller{}
-	return NewZMQSource(unmarshaller.Unmarshall)
+	return NewZMQSource(bindAddr, unmarshaller.Unmarshall)
 }
 
-func NewZMQSource(unmarshaller bus.MessageUnmarshaller) (source bus.Source) {
+func NewZMQSource(bindAddr string, unmarshaller bus.MessageUnmarshaller) (source bus.Source) {
 	return &ZMQSource {
+		bindAddr: bindAddr,
 		active: concurrent.NewReferenceLocker(false),
 		unmarshaller: unmarshaller,
 	}
 }
 
 type ZMQSource struct {
+	bindAddr string
 	received []byte
 	socket *zmq.Socket
 	active concurrent.ReferenceLocker
-
 	unmarshaller bus.MessageUnmarshaller
 }
 
-func (zmqs *ZMQSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
-	var socket *zmq.Socket
+func (zmqs *ZMQSource) loop(outgoing chan<- bus.Event) (err error) {
+	var lastSleepDuration time.Duration = 1
+
+	for zmqs.active.Get().(bool) {
+		if received, err := zmqs.socket.Recv(zmq.DONTWAIT); err != nil {
+			if err == syscall.EAGAIN {
+				if lastSleepDuration < 10 {
+					lastSleepDuration += 1
+				}
+
+				time.Sleep(lastSleepDuration * time.Millisecond)
+			} else {
+				err = fmt.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
+				break
+			}
+		} else 	{
+			lastSleepDuration  = 1
+
+			var event struct {
+				Action interface{}
+				Payload bus.Message
+			}
+
+			if unmarshalled, err := zmqs.unmarshaller([]byte(received), &event); err != nil {
+				log.Errorf("Failed to unmarshal ZMQ message: %v", err)
+			} else if unmarshalled {
+				outgoing <- bus.NewEvent(event.Action, event.Payload)
+			}
+		}
+	}
+
+	err = zmqs.socket.Close()
+	return
+}
+
+func (zmqs *ZMQSource) Start(outgoing chan<- bus.Event, actx bus.ActorContext) (err error) {
 	zmqs.active.Set(true)
 
-	if socket, err = zmq.NewSocket(zmq.PULL); err == nil {
-		if err = socket.Bind("tcp://127.0.0.1:5555"); err == nil {
-			for zmqs.active.Get().(bool) {
-				if received, err := socket.Recv(zmq.DONTWAIT); err != nil {
-					if err == syscall.EAGAIN {
-						// Sleep for a second if there's nothing there
-						time.Sleep(1 * time.Millisecond)
-					} else {
-						log.Errorf("Failed to recieve from ZMQ PULL socket: %v", err)
-						break
-					}
-				} else 	{
-					var event struct {
-						Action interface{}
-						Payload bus.Message
-					}
-
-					if unmarshalled, err := zmqs.unmarshaller([]byte(received), &event); err != nil {
-						log.Errorf("Failed to unmarshal ZMQ message: %v", err)
-					} else if unmarshalled {
-						outgoing <- bus.NewEvent(event.Action, event.Payload)
-					}
-				}
-			}
+	if zmqs.socket, err = zmq.NewSocket(zmq.PULL); err == nil {
+		if err = zmqs.socket.Bind(zmqs.bindAddr); err == nil {
+			zmqs.loop(outgoing)
 		}
 	}
 
@@ -211,5 +232,6 @@ func (zmqs *ZMQSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (er
 
 func (zmqs *ZMQSource) Stop() (err error) {
 	zmqs.active.Set(false)
+	zmqs.socket.Close()
 	return
 }

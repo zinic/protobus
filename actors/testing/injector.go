@@ -21,7 +21,7 @@ type InjectorSource struct {
 	interval time.Duration
 }
 
-func (injector *InjectorSource) Start(outgoing chan bus.Event, actx bus.ActorContext) (err error) {
+func (injector *InjectorSource) Start(outgoing chan<- bus.Event, actx bus.ActorContext) (err error) {
 	injector.running.Set(true)
 
 	var elapsedNanos int64 = 0
